@@ -78,3 +78,27 @@ def test_page_request_returns_json_payload() -> None:
         service._page_json_with_retry(FakePage(), "https://steamcommunity.com/inventory/test")
     )
     assert result == {"success": 1}
+
+
+def test_direct_navigation_parses_json_payload() -> None:
+    class FakeResponse:
+        ok = True
+        status = 200
+
+    class FakePage:
+        async def goto(self, *_args, **_kwargs):
+            return FakeResponse()
+
+        async def text_content(self, selector):
+            assert selector == "body"
+            return '{"success": true, "prices": []}'
+
+    service = SteamMarketService(session=object(), store=object())
+    result = asyncio.run(
+        service._navigate_json_with_retry(
+            FakePage(),
+            "https://steamcommunity.com/market/pricehistory/",
+            params={"appid": 730},
+        )
+    )
+    assert result["success"] is True

@@ -1,6 +1,8 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from playwright.async_api import APIResponse
 from playwright.async_api import Error as PlaywrightError
@@ -212,7 +214,54 @@ class SteamMarketService:
             await asyncio.sleep(2**attempt)
         raise RuntimeError(
             f"{last_error}，已重试 {settings.request_retries} 次；"
-            "登录页面可用但库存请求仍失败时，请检查 VPN 是否覆盖独立 Chromium"
+            "请检查 Steam 社区连接或 VPN/加速器规则"
+        )
+
+    async def _navigate_json_with_retry(
+        self,
+        page: Any,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        """直接导航至 JSON 接口，绕过 Steam 页面对脚本 fetch 的限制。"""
+        target = f"{url}?{urlencode(params or {})}"
+        last_error = "未知网络错误"
+        for attempt in range(settings.request_retries + 1):
+            try:
+                response = await page.goto(
+                    target,
+                    wait_until="domcontentloaded",
+                    timeout=settings.request_timeout_seconds * 1000,
+                )
+                if response is None:
+                    last_error = "Steam 未返回响应"
+                elif not response.ok:
+                    last_error = f"Steam 返回 HTTP {response.status}"
+                    if response.status < 500:
+                        break
+                else:
+                    body = await page.text_content("body")
+                    if not body:
+                        last_error = "Steam 返回空响应"
+                    else:
+                        try:
+                            payload = json.loads(body)
+                        except json.JSONDecodeError:
+                            last_error = "Steam 返回了无法识别的价格数据"
+                        else:
+                            if isinstance(payload, dict):
+                                return payload
+                            last_error = "Steam 返回的价格数据结构不正确"
+            except PlaywrightTimeoutError:
+                last_error = "请求超时"
+            except PlaywrightError:
+                last_error = "浏览器导航失败"
+            if attempt < settings.request_retries:
+                await asyncio.sleep(2**attempt)
+        raise RuntimeError(
+            f"{last_error}，已重试 {settings.request_retries} 次；"
+            "请检查 Steam 市场页面能否在登录窗口中正常打开"
         )
 
     async def scan_inventory(self) -> SyncResult:
@@ -276,16 +325,19 @@ class SteamMarketService:
                 return await self.update_price_history(
                     appid, market_hash_name, currency, context=owned_context
                 )
-        page = context.pages[0] if context.pages else await context.new_page()
-        payload = await self._page_json_with_retry(
-            page,
-            "https://steamcommunity.com/market/pricehistory/",
-            params={
-                "appid": appid,
-                "market_hash_name": market_hash_name,
-                "currency": CURRENCY_IDS[currency],
-            },
-        )
+        page = await context.new_page()
+        try:
+            payload = await self._navigate_json_with_retry(
+                page,
+                "https://steamcommunity.com/market/pricehistory/",
+                params={
+                    "appid": appid,
+                    "market_hash_name": market_hash_name,
+                    "currency": CURRENCY_IDS[currency],
+                },
+            )
+        finally:
+            await page.close()
         if not payload.get("success"):
             raise RuntimeError("Steam 未返回有效价格历史")
         currency_marker = f"{payload.get('price_prefix', '')}{payload.get('price_suffix', '')}"
