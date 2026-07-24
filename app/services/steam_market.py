@@ -2,6 +2,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from playwright.async_api import APIResponse
+from playwright.async_api import Error as PlaywrightError
+
 from app.core.config import settings
 from app.core.database import Database, database
 from app.core.models import Currency, InventoryAsset, SyncResult
@@ -78,6 +81,31 @@ class SteamMarketService:
         self.session = session or steam_session_service
         self.store = store or database
 
+    async def _get_with_retry(
+        self,
+        request_context: Any,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> APIResponse:
+        last_error: PlaywrightError | None = None
+        for attempt in range(settings.request_retries + 1):
+            try:
+                return await request_context.get(
+                    url,
+                    params=params,
+                    timeout=settings.request_timeout_seconds * 1000,
+                )
+            except PlaywrightError as exc:
+                last_error = exc
+                if attempt >= settings.request_retries:
+                    break
+                await asyncio.sleep(2**attempt)
+        raise RuntimeError(
+            f"连接 Steam 超时，已重试 {settings.request_retries} 次；"
+            "请检查 Steam 社区网络或加速器"
+        ) from last_error
+
     async def _inventory_contexts(self, context: Any, steam_id: str) -> list[tuple[int, str]]:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(
@@ -113,11 +141,15 @@ class SteamMarketService:
                     params: dict[str, object] = {"l": "schinese", "count": 2000}
                     if start_assetid:
                         params["start_assetid"] = start_assetid
-                    response = await context.request.get(
+                    try:
+                        response = await self._get_with_retry(
+                            context.request,
                         f"https://steamcommunity.com/inventory/{status.steam_id}/{appid}/{contextid}",
-                        params=params,
-                        timeout=45_000,
-                    )
+                            params=params,
+                        )
+                    except RuntimeError as exc:
+                        errors.append(f"{appid}/{contextid}: {exc}")
+                        break
                     if not response.ok:
                         errors.append(f"{appid}/{contextid}: HTTP {response.status}")
                         break
@@ -130,7 +162,9 @@ class SteamMarketService:
                         break
                     await asyncio.sleep(settings.request_delay_seconds)
                 await asyncio.sleep(settings.request_delay_seconds)
-        self.store.replace_inventory(assets)
+        # 任一上下文失败时不覆盖旧库存，避免把暂时无法访问的资产误标为不可出售。
+        if not errors:
+            self.store.replace_inventory(assets)
         self.store.audit("inventory.sync", status.steam_id, {"count": len(assets), "errors": errors})
         return SyncResult(
             inventory_count=len(assets),
@@ -151,14 +185,14 @@ class SteamMarketService:
                 return await self.update_price_history(
                     appid, market_hash_name, currency, context=owned_context
                 )
-        response = await context.request.get(
+        response = await self._get_with_retry(
+            context.request,
             "https://steamcommunity.com/market/pricehistory/",
             params={
                 "appid": appid,
                 "market_hash_name": market_hash_name,
                 "currency": CURRENCY_IDS[currency],
             },
-            timeout=45_000,
         )
         if not response.ok:
             raise RuntimeError(f"价格历史请求失败：HTTP {response.status}")

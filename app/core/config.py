@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     allow_market_writes: bool = False
     sync_interval_seconds: int = 900
     request_delay_seconds: float = 1.5
+    request_timeout_seconds: int = 30
+    request_retries: int = 2
     default_currency: str = "CNY"
     max_batch_items: int = 2000
     max_unit_buyer_price_minor: int = 100_000

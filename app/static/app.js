@@ -3,8 +3,17 @@ let currentListings = [];
 
 async function request(path, options = {}) {
   const response = await fetch(path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || `请求失败：${response.status}`);
+  const contentType = response.headers.get("content-type") || "";
+  let data;
+  if (contentType.includes("application/json")) {
+    data = await response.json();
+  } else {
+    const text = await response.text();
+    data = { detail: text || response.statusText || "服务器未返回错误详情" };
+  }
+  if (!response.ok) {
+    throw new Error(data.detail || `请求失败：${response.status}`);
+  }
   return data;
 }
 
@@ -91,6 +100,9 @@ $("#logout").addEventListener("click", () => busy($("#logout"), async () => {
 }));
 $("#sync-inventory").addEventListener("click", () => busy($("#sync-inventory"), async () => {
   const result = await post("/api/sync/inventory");
+  if (result.errors.length) {
+    throw new Error(`库存同步未完成：${result.errors.join("；")}`);
+  }
   toast(`已同步 ${result.inventory_count} 件库存，其中 ${result.marketable_count} 件可出售`);
   await load();
 }));

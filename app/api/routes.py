@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from playwright.async_api import Error as PlaywrightError
 
 from app.core.config import settings
 from app.core.database import database
@@ -76,16 +77,16 @@ def inventory(marketable_only: bool = True) -> list[dict[str, object]]:
 async def sync_inventory() -> SyncResult:
     try:
         return await steam_market_service.scan_inventory()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, PlaywrightError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Steam 库存同步失败：{exc}") from exc
 
 
 @router.post("/sync/prices", response_model=SyncResult)
 async def sync_prices(currency: Currency = Currency.CNY) -> SyncResult:
     try:
         return await steam_market_service.sync_all_prices(currency)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, PlaywrightError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Steam 行情同步失败：{exc}") from exc
 
 
 @router.post("/sync/listings", response_model=SyncResult)

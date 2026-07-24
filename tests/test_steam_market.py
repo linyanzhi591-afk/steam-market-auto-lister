@@ -1,6 +1,15 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
-from app.services.steam_market import parse_inventory_payload, parse_price_history
+import pytest
+from playwright.async_api import Error as PlaywrightError
+
+from app.core.config import settings
+from app.services.steam_market import (
+    SteamMarketService,
+    parse_inventory_payload,
+    parse_price_history,
+)
 
 
 def test_parse_inventory_payload_joins_descriptions() -> None:
@@ -43,3 +52,17 @@ def test_price_history_only_keeps_last_30_days() -> None:
     assert len(rows) == 1
     assert rows[0][1:] == (1234, 5)
 
+
+def test_timeout_is_converted_to_readable_error() -> None:
+    class FailingRequest:
+        async def get(self, *_args, **_kwargs):
+            raise PlaywrightError("connect ETIMEDOUT")
+
+    original_retries = settings.request_retries
+    settings.request_retries = 0
+    try:
+        service = SteamMarketService(session=object(), store=object())
+        with pytest.raises(RuntimeError, match="连接 Steam 超时"):
+            asyncio.run(service._get_with_retry(FailingRequest(), "https://example.invalid"))
+    finally:
+        settings.request_retries = original_retries
