@@ -217,6 +217,101 @@ class SteamMarketService:
             "请检查 Steam 社区网络或加速器"
         ) from last_error
 
+    async def _browser_post_form(
+        self,
+        context: Any,
+        url: str,
+        form: dict[str, str],
+    ) -> dict[str, Any]:
+        """在 Steam 页面内提交表单，确保请求使用 Chromium 的代理链路。"""
+        page = next(
+            (
+                candidate
+                for candidate in context.pages
+                if candidate.url.startswith("https://steamcommunity.com/")
+            ),
+            None,
+        ) or await context.new_page()
+        if not page.url.startswith("https://steamcommunity.com/"):
+            try:
+                await page.goto(
+                    "https://steamcommunity.com/market/",
+                    wait_until="domcontentloaded",
+                    timeout=settings.request_timeout_seconds * 1000,
+                )
+            except PlaywrightError as exc:
+                raise RuntimeError(
+                    "Steam 市场页面无法打开，请检查 Chromium 使用的 VPN/加速器"
+                ) from exc
+        last_error = "浏览器网络请求失败"
+        for attempt in range(settings.request_retries + 1):
+            try:
+                result = await page.evaluate(
+                    """
+                    async ({url, form, timeoutMs}) => {
+                      const controller = new AbortController();
+                      const timer = setTimeout(() => controller.abort(), timeoutMs);
+                      try {
+                        const response = await fetch(url, {
+                          method: 'POST',
+                          credentials: 'include',
+                          headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Requested-With': 'XMLHttpRequest'
+                          },
+                          body: new URLSearchParams(form).toString(),
+                          signal: controller.signal
+                        });
+                        const text = await response.text();
+                        let payload = null;
+                        try {
+                          payload = text ? JSON.parse(text) : {};
+                        } catch {
+                          return {
+                            ok: false,
+                            status: response.status,
+                            error: 'Steam 返回了无法识别的数据'
+                          };
+                        }
+                        return {
+                          ok: response.ok,
+                          status: response.status,
+                          payload,
+                          error: response.ok ? null : `HTTP ${response.status}`
+                        };
+                      } catch (error) {
+                        return {
+                          ok: false,
+                          status: 0,
+                          error: error?.name === 'AbortError'
+                            ? '请求超时'
+                            : '浏览器网络请求失败'
+                        };
+                      } finally {
+                        clearTimeout(timer);
+                      }
+                    }
+                    """,
+                    {
+                        "url": url,
+                        "form": form,
+                        "timeoutMs": settings.request_timeout_seconds * 1000,
+                    },
+                )
+            except PlaywrightError:
+                result = {"ok": False, "status": 0, "error": "浏览器执行请求失败"}
+            if result.get("ok"):
+                return dict(result.get("payload") or {})
+            last_error = str(result.get("error") or "Steam 请求失败")
+            status = int(result.get("status") or 0)
+            if attempt >= settings.request_retries or (0 < status < 500 and status != 429):
+                break
+            await asyncio.sleep(2**attempt)
+        raise RuntimeError(
+            f"{last_error}，已重试 {settings.request_retries} 次；"
+            "请确认 Steam 市场页面可在登录浏览器中打开"
+        )
+
     async def _inventory_contexts(self, context: Any, steam_id: str) -> list[tuple[int, str]]:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(
@@ -523,29 +618,18 @@ class SteamMarketService:
             raise PermissionError("真实市场操作未启用")
         async with self.session.browser_context() as context:
             session_id = await self._ensure_session_id(context)
-            try:
-                response = await context.request.post(
-                    "https://steamcommunity.com/market/sellitem/",
-                    form={
-                        "sessionid": session_id,
-                        "appid": str(appid),
-                        "contextid": contextid,
-                        "assetid": assetid,
-                        "amount": "1",
-                        "price": str(seller_price_minor),
-                    },
-                    headers={"Referer": f"https://steamcommunity.com/profiles/{self.session.status().steam_id}/inventory/"},
-                )
-            except PlaywrightError as exc:
-                raise RuntimeError(
-                    "连接 Steam 上架接口失败，请检查 VPN/加速器是否覆盖登录浏览器"
-                ) from exc
-            if not response.ok:
-                raise RuntimeError(f"Steam 上架接口返回 HTTP {response.status}")
-            try:
-                payload = await response.json()
-            except PlaywrightError as exc:
-                raise RuntimeError("Steam 上架接口没有返回有效 JSON，请重新登录后重试") from exc
+            payload = await self._browser_post_form(
+                context,
+                "https://steamcommunity.com/market/sellitem/",
+                {
+                    "sessionid": session_id,
+                    "appid": str(appid),
+                    "contextid": contextid,
+                    "assetid": assetid,
+                    "amount": "1",
+                    "price": str(seller_price_minor),
+                },
+            )
         if not payload.get("success"):
             reason = payload.get("message") or payload.get("error") or "未提供原因"
             raise RuntimeError(f"Steam 拒绝上架：{reason}")
@@ -556,13 +640,13 @@ class SteamMarketService:
             raise PermissionError("真实市场操作未启用")
         async with self.session.browser_context() as context:
             session_id = await self._ensure_session_id(context)
-            response = await context.request.post(
+            payload = await self._browser_post_form(
+                context,
                 f"https://steamcommunity.com/market/removelisting/{steam_listing_id}",
-                form={"sessionid": session_id},
-                headers={"Referer": "https://steamcommunity.com/market/"},
+                {"sessionid": session_id},
             )
-        if not response.ok:
-            raise RuntimeError(f"Steam 撤单失败：HTTP {response.status}")
+        if payload.get("success") is False or payload.get("success") == 0:
+            raise RuntimeError("Steam 拒绝撤单")
 
     async def active_listings(self) -> list[dict[str, object]]:
         """分页读取 Steam 我的在售，包含程序启动前创建的挂单。"""

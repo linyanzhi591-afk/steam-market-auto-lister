@@ -72,6 +72,35 @@ def test_missing_session_id_cookie_is_created() -> None:
     assert context.added[0]["value"] == session_id
 
 
+def test_market_post_uses_logged_in_browser_page() -> None:
+    class FakePage:
+        url = "https://steamcommunity.com/market/"
+
+        async def evaluate(self, _script, arguments):
+            assert arguments["url"].endswith("/market/sellitem/")
+            assert arguments["form"]["sessionid"] == "csrf-token"
+            return {
+                "ok": True,
+                "status": 200,
+                "payload": {"success": True},
+                "error": None,
+            }
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = [FakePage()]
+
+    service = SteamMarketService(session=object(), store=object())
+    payload = asyncio.run(
+        service._browser_post_form(
+            FakeContext(),
+            "https://steamcommunity.com/market/sellitem/",
+            {"sessionid": "csrf-token"},
+        )
+    )
+    assert payload == {"success": True}
+
+
 def test_parse_inventory_payload_joins_descriptions() -> None:
     payload = {
         "assets": [
