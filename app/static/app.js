@@ -24,6 +24,11 @@ const post = (path, body) => request(path, {
   headers: body ? { "Content-Type": "application/json" } : {},
   body: body ? JSON.stringify(body) : undefined,
 });
+const put = (path, body) => request(path, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
 const remove = (path) => request(path, { method: "DELETE" });
 
 function escapeHtml(value) {
@@ -111,9 +116,14 @@ function renderListings(items) {
 
 async function load() {
   try {
-    const currency = $("#currency").value;
-    const [health, session, dashboard, strategies, inventory, listings, blacklist] = await Promise.all([
-      getJSON("/api/health"), getJSON("/api/session"),
+    const [session, appSettings] = await Promise.all([
+      getJSON("/api/session"),
+      getJSON("/api/settings"),
+    ]);
+    const currency = appSettings.currency;
+    $("#currency").value = currency;
+    const [health, dashboard, strategies, inventory, listings, blacklist] = await Promise.all([
+      getJSON("/api/health"),
       getJSON(`/api/dashboard?currency=${currency}`), getJSON("/api/strategies"),
       getJSON("/api/inventory?marketable_only=true"), getJSON("/api/listings"),
       getJSON("/api/blacklist"),
@@ -127,6 +137,12 @@ async function load() {
     $("#strategies").innerHTML = strategies
       .map((item) => `<div class="strategy"><strong>${item.name}</strong><small>${item.id}</small></div>`)
       .join("");
+    $("#default-strategy").value = appSettings.default_strategy;
+    $("#plan-strategy").value = appSettings.default_strategy;
+    $("#trend-hours").value = appSettings.trend_hours;
+    $("#robust-hours").value = appSettings.robust_median_hours;
+    $("#follow-hours").value = appSettings.market_follow_hours;
+    $("#fast-hours").value = appSettings.fast_sell_hours;
     renderInventory(inventory);
     renderListings(listings);
     renderBlacklist(blacklist);
@@ -153,6 +169,7 @@ $("#login").addEventListener("click", () => busy($("#login"), async () => {
   renderSession({ state: "logging_in", message: "请在 Steam 官方窗口完成登录" });
   const result = await post("/api/session/login");
   renderSession(result.status);
+  await load();
 }));
 $("#logout").addEventListener("click", () => busy($("#logout"), async () => {
   renderSession((await post("/api/session/logout")).status);
@@ -253,6 +270,33 @@ $("#blacklist-body").addEventListener("click", async (event) => {
     await load();
   });
 });
+$("#save-settings").addEventListener("click", () => busy($("#save-settings"), async () => {
+  const saved = await put("/api/settings", {
+    currency: $("#currency").value,
+    default_strategy: $("#default-strategy").value,
+    trend_hours: Number($("#trend-hours").value),
+    robust_median_hours: Number($("#robust-hours").value),
+    market_follow_hours: Number($("#follow-hours").value),
+    fast_sell_hours: Number($("#fast-hours").value),
+  });
+  $("#plan-strategy").value = saved.default_strategy;
+  toast("设置已保存");
+}));
+document.querySelectorAll(".view-tab").forEach((button) => {
+  button.addEventListener("click", () => {
+    const view = button.dataset.view;
+    document.querySelectorAll(".view-main").forEach((element) => {
+      element.hidden = view !== "main";
+    });
+    document.querySelectorAll(".view-settings").forEach((element) => {
+      element.hidden = view !== "settings";
+    });
+    document.querySelectorAll(".view-tab").forEach((tab) => {
+      tab.classList.toggle("active", tab === button);
+      tab.classList.toggle("secondary", tab !== button);
+    });
+  });
+});
 $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), async () => {
   const ids = currentListings.filter((item) => item.state === "planned").map((item) => item.id);
   if (!ids.length) throw new Error("没有待提交计划");
@@ -261,5 +305,4 @@ $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), as
   await post("/api/listings/execute", { listing_ids: ids, confirmation_text: confirmation });
   await load();
 }));
-$("#currency").addEventListener("change", load);
 load();

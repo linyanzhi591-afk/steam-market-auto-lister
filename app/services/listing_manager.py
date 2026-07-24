@@ -43,6 +43,26 @@ class ListingManager:
         self.store = store or database
         self.market = market or steam_market_service
 
+    def strategy_ladder(self) -> list[tuple[PricingStrategy, timedelta]]:
+        if not hasattr(self.store, "settings"):
+            return STRATEGY_LADDER
+        app_settings = self.store.settings()
+        return [
+            (PricingStrategy.TREND, timedelta(hours=app_settings.trend_hours)),
+            (
+                PricingStrategy.ROBUST_MEDIAN,
+                timedelta(hours=app_settings.robust_median_hours),
+            ),
+            (
+                PricingStrategy.MARKET_FOLLOW,
+                timedelta(hours=app_settings.market_follow_hours),
+            ),
+            (
+                PricingStrategy.FAST_SELL,
+                timedelta(hours=app_settings.fast_sell_hours),
+            ),
+        ]
+
     async def create_plans(
         self,
         strategy: PricingStrategy,
@@ -157,6 +177,7 @@ class ListingManager:
             [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
         )
         now = datetime.now(UTC)
+        ladder = self.strategy_ladder()
         for record in open_records:
             match = by_id.get(record.steam_listing_id or "")
             if match is None and record.state is ListingState.PENDING_CONFIRMATION:
@@ -169,7 +190,7 @@ class ListingManager:
                     None,
                 )
             if match and record.state is ListingState.PENDING_CONFIRMATION:
-                next_action = now + STRATEGY_LADDER[min(record.stage, 3)][1]
+                next_action = now + ladder[min(record.stage, len(ladder) - 1)][1]
                 self.store.update_listing(
                     record.id,
                     state=ListingState.ACTIVE,
@@ -191,6 +212,7 @@ class ListingManager:
 
     async def process_expired(self, currency: Currency) -> int:
         now = datetime.now(UTC)
+        ladder = self.strategy_ladder()
         processed = 0
         resubmit_ids: list[int] = []
         for record in self.store.listings([ListingState.ACTIVE]):
@@ -199,7 +221,7 @@ class ListingManager:
             if not record.steam_listing_id:
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
                 continue
-            if record.stage + 1 >= len(STRATEGY_LADDER):
+            if record.stage + 1 >= len(ladder):
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
                 continue
             await self.market.cancel_listing(record.steam_listing_id)
@@ -207,7 +229,7 @@ class ListingManager:
                 record.appid, record.market_hash_name, currency
             )
             next_stage = record.stage + 1
-            next_strategy, _duration = STRATEGY_LADDER[next_stage]
+            next_strategy, _duration = ladder[next_stage]
             points = _as_points(
                 self.store.prices(record.appid, record.market_hash_name, currency.value)
             )

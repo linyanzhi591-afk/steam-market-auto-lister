@@ -117,10 +117,20 @@ class BlacklistRequest(BaseModel):
     market_hash_name: str = Field(min_length=1)
 
 
+class AppSettings(BaseModel):
+    currency: Currency = Currency.CNY
+    default_strategy: PricingStrategy = PricingStrategy.ROBUST_MEDIAN
+    trend_hours: int = Field(default=72, ge=1, le=720)
+    robust_median_hours: int = Field(default=48, ge=1, le=720)
+    market_follow_hours: int = Field(default=24, ge=1, le=720)
+    fast_sell_hours: int = Field(default=24, ge=1, le=720)
+
+
 class SessionStatus(BaseModel):
     state: SessionState
     steam_id: str | None = None
     display_name: str | None = None
+    wallet_currency: Currency | None = None
     message: str
 
 

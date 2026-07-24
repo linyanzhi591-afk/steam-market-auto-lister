@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.config import settings
-from app.core.models import InventoryAsset, ListingRecord, ListingState, PricingStrategy
+from app.core.models import (
+    AppSettings,
+    Currency,
+    InventoryAsset,
+    ListingRecord,
+    ListingState,
+    PricingStrategy,
+)
 
 
 def utc_now() -> str:
@@ -97,7 +104,24 @@ class Database:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (appid, market_hash_name)
                 );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
+            )
+            defaults = {
+                "currency": Currency.CNY.value,
+                "default_strategy": PricingStrategy.ROBUST_MEDIAN.value,
+                "trend_hours": "72",
+                "robust_median_hours": "48",
+                "market_follow_hours": "24",
+                "fast_sell_hours": "24",
+            }
+            db.executemany(
+                "INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+                defaults.items(),
             )
             columns = {
                 row["name"] for row in db.execute("PRAGMA table_info(listings)").fetchall()
@@ -106,6 +130,21 @@ class Database:
                 db.execute(
                     "ALTER TABLE listings ADD COLUMN minimum_receive_minor INTEGER NOT NULL DEFAULT 1"
                 )
+
+    def clear_runtime_cache(self) -> None:
+        """清除可重建缓存和未提交计划，保留真实挂单、黑名单及设置。"""
+        with self.connect() as db:
+            db.execute("DELETE FROM inventory_assets")
+            db.execute("DELETE FROM price_history")
+            db.execute(
+                "DELETE FROM listings WHERE state IN (?, ?, ?, ?)",
+                (
+                    ListingState.PLANNED.value,
+                    ListingState.FAILED.value,
+                    ListingState.CANCELLED.value,
+                    ListingState.PAUSED.value,
+                ),
+            )
 
     def replace_inventory(self, assets: list[InventoryAsset]) -> None:
         seen_at = utc_now()
@@ -178,6 +217,31 @@ class Database:
                     "FROM item_blacklist ORDER BY appid, market_hash_name"
                 )
             ]
+
+    def settings(self) -> AppSettings:
+        with self.connect() as db:
+            values = {
+                row["key"]: row["value"]
+                for row in db.execute("SELECT key, value FROM app_settings")
+            }
+        return AppSettings.model_validate(values)
+
+    def save_settings(self, app_settings: AppSettings) -> None:
+        values = {
+            key: value.value if hasattr(value, "value") else str(value)
+            for key, value in app_settings.model_dump().items()
+        }
+        with self.connect() as db:
+            db.executemany(
+                """
+                INSERT INTO app_settings(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                values.items(),
+            )
+
+    def save_currency(self, currency: Currency) -> None:
+        self.save_settings(self.settings().model_copy(update={"currency": currency}))
 
     def add_blacklist(self, appid: int, market_hash_name: str) -> None:
         now = utc_now()

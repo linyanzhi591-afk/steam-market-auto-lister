@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.core.database import Database
-from app.core.models import InventoryAsset, ListingState, PricingStrategy
+from app.core.models import AppSettings, Currency, InventoryAsset, ListingState, PricingStrategy
 
 
 def make_database(path: Path) -> Database:
@@ -80,3 +80,51 @@ def test_blacklist_hides_inventory_and_pauses_plan(tmp_path: Path) -> None:
 
     database.remove_blacklist(730, "Test")
     assert len(database.inventory(marketable_only=True)) == 1
+
+
+def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    database.save_settings(
+        AppSettings(
+            currency=Currency.INR,
+            default_strategy=PricingStrategy.TREND,
+            trend_hours=96,
+        )
+    )
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="测试",
+        market_hash_name="Test",
+        marketable=True,
+        tradable=True,
+    )
+    active_asset = asset.model_copy(
+        update={"assetid": "101", "market_hash_name": "Active Test"}
+    )
+    database.replace_inventory([asset, active_asset])
+    database.add_blacklist(730, "Blocked")
+    database.create_listing(
+        next(item for item in database.inventory(marketable_only=True) if item["assetid"] == "100"),
+        PricingStrategy.ROBUST_MEDIAN,
+        1000,
+        1150,
+    )
+    active_id = database.create_listing(
+        next(item for item in database.inventory(marketable_only=True) if item["assetid"] == "101"),
+        PricingStrategy.ROBUST_MEDIAN,
+        1000,
+        1150,
+    )
+    database.update_listing(active_id, state=ListingState.ACTIVE)
+
+    database.clear_runtime_cache()
+
+    assert database.inventory(marketable_only=False) == []
+    assert len(database.listings()) == 1
+    assert database.listings()[0].state is ListingState.ACTIVE
+    assert database.settings().currency is Currency.INR
+    assert database.settings().trend_hours == 96
+    assert database.blacklist()[0]["market_hash_name"] == "Blocked"

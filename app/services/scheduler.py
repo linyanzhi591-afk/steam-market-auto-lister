@@ -4,7 +4,8 @@ import contextlib
 from playwright.async_api import Error as PlaywrightError
 
 from app.core.config import settings
-from app.core.models import Currency, SessionState
+from app.core.database import database
+from app.core.models import SessionState
 from app.services.listing_manager import listing_manager
 from app.services.steam_session import steam_session_service
 
@@ -32,7 +33,7 @@ class BackgroundScheduler:
             try:
                 await listing_manager.sync_states()
                 if settings.allow_market_writes and not settings.dry_run:
-                    await listing_manager.process_expired(Currency(settings.default_currency))
+                    await listing_manager.process_expired(database.settings().currency)
             except (OSError, PermissionError, PlaywrightError, RuntimeError):
                 # 后台失败不得终止服务；具体失败由下一轮或人工同步重新检查。
                 continue

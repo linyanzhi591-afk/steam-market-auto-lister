@@ -17,12 +17,17 @@
         <span id="health" class="pill">正在检查服务</span>
       </header>
 
-      <section class="notice">
+      <nav class="view-tabs">
+        <button class="view-tab active" type="button" data-view="main">库存与任务</button>
+        <button class="view-tab secondary" type="button" data-view="settings">设置</button>
+      </nav>
+
+      <section class="notice view-main">
         <strong id="mode-label">演练模式。</strong>
         默认禁止真实市场写入；启用真实操作需要同时修改两个环境变量并输入确认文本。
       </section>
 
-      <section class="grid">
+      <section class="grid view-main">
         <article class="card">
           <span>登录状态</span>
           <strong id="session-state">读取中</strong>
@@ -37,11 +42,11 @@
         <article class="card"><span>当前在售</span><strong id="active">0</strong></article>
       </section>
 
-      <section class="panel">
+      <section class="panel view-settings" hidden>
         <div class="panel-title">
           <div>
-            <p class="eyebrow">PRICING ENGINE</p>
-            <h2>30 天定价策略</h2>
+            <p class="eyebrow">APPLICATION SETTINGS</p>
+            <h2>币种与策略管理</h2>
           </div>
           <select id="currency">
             <option value="CNY">人民币 CNY</option>
@@ -49,9 +54,24 @@
           </select>
         </div>
         <div id="strategies" class="strategy-list"></div>
+        <div class="settings-form">
+          <label>默认策略
+            <select id="default-strategy">
+              <option value="robust_median">稳健中位价</option>
+              <option value="trend">趋势价</option>
+              <option value="market_follow">市场跟随价</option>
+              <option value="fast_sell">快速出售价</option>
+            </select>
+          </label>
+          <label>趋势价阶段（小时）<input id="trend-hours" type="number" min="1" max="720" /></label>
+          <label>稳健中位价阶段（小时）<input id="robust-hours" type="number" min="1" max="720" /></label>
+          <label>市场跟随价阶段（小时）<input id="follow-hours" type="number" min="1" max="720" /></label>
+          <label>快速出售价阶段（小时）<input id="fast-hours" type="number" min="1" max="720" /></label>
+          <button id="save-settings" type="button">保存设置</button>
+        </div>
       </section>
 
-      <section class="panel">
+      <section class="panel view-main">
         <div class="panel-title">
           <div>
             <p class="eyebrow">INVENTORY</p>
@@ -83,7 +103,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel view-settings" hidden>
         <div class="panel-title">
           <div>
             <p class="eyebrow">BLACKLIST</p>
@@ -99,7 +119,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel view-main">
         <div class="panel-title">
           <div>
             <p class="eyebrow">LISTINGS</p>

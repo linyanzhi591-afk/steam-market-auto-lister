@@ -7,6 +7,7 @@ from playwright.async_api import Error as PlaywrightError
 from app.core.config import settings
 from app.core.database import database
 from app.core.models import (
+    AppSettings,
     BlacklistEntry,
     BlacklistRequest,
     Currency,
@@ -47,6 +48,8 @@ def session_status() -> SessionStatus:
 @router.post("/session/login", response_model=SessionActionResult)
 async def session_login() -> SessionActionResult:
     status = await steam_session_service.login()
+    if status.wallet_currency:
+        database.save_currency(status.wallet_currency)
     return SessionActionResult(success=status.state.value == "logged_in", status=status)
 
 
@@ -99,6 +102,18 @@ def remove_blacklist(appid: int, market_hash_name: str) -> None:
         f"{appid}:{market_hash_name}",
         {"appid": appid, "market_hash_name": market_hash_name},
     )
+
+
+@router.get("/settings", response_model=AppSettings)
+def get_settings() -> AppSettings:
+    return database.settings()
+
+
+@router.put("/settings", response_model=AppSettings)
+def update_settings(request: AppSettings) -> AppSettings:
+    database.save_settings(request)
+    database.audit("settings.update", "application", request.model_dump(mode="json"))
+    return database.settings()
 
 
 @router.post("/sync/inventory", response_model=SyncResult)

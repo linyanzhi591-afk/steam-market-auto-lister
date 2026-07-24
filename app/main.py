@@ -19,7 +19,10 @@ STATIC_DIR = BASE_DIR / "static"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     database.initialize()
-    await steam_session_service.restore()
+    database.clear_runtime_cache()
+    session = await steam_session_service.restore()
+    if session.wallet_currency:
+        database.save_currency(session.wallet_currency)
     background_scheduler.start()
     yield
     await background_scheduler.stop()

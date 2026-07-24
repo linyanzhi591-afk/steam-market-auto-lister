@@ -8,7 +8,7 @@ from playwright.async_api import BrowserContext, Cookie, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from app.core.config import settings
-from app.core.models import SessionState, SessionStatus
+from app.core.models import Currency, SessionState, SessionStatus
 
 STEAM_LOGIN_URL = (
     "https://steamcommunity.com/login/home/"
@@ -82,9 +82,14 @@ class SteamSessionService:
         response = await page.goto(STEAM_MARKET_URL, wait_until="domcontentloaded", timeout=45_000)
         if response is None or response.status >= 400 or "/login/" in page.url:
             return None
+        wallet_currency_id = await page.evaluate(
+            "() => Number(window.g_rgWalletInfo?.wallet_currency || 0)"
+        )
+        wallet_currency = {23: Currency.CNY, 24: Currency.INR}.get(wallet_currency_id)
         return SessionStatus(
             state=SessionState.LOGGED_IN,
             steam_id=steam_id,
+            wallet_currency=wallet_currency,
             message="Steam 会话有效，下次启动将自动恢复",
         )
 

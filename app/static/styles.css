@@ -15,6 +15,8 @@ h2 { margin: 4px 0 0; }
 .subtle, small { color: #84948e; }
 .pill { padding: 8px 12px; border-radius: 999px; background: #17231f; color: #66e0b7; }
 .notice { margin: 34px 0 20px; padding: 16px 18px; border: 1px solid #554824; background: #28210f; border-radius: 14px; color: #e8d18e; }
+.view-tabs { display: flex; gap: 10px; margin-top: 28px; }
+.view-tab.active { color: #07110d; background: #66e0b7; }
 .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .card, .panel { border: 1px solid #22302b; background: rgba(15, 21, 19, .82); border-radius: 18px; }
 .card { padding: 20px; display: grid; gap: 10px; }
@@ -31,6 +33,9 @@ button:disabled { opacity: .5; cursor: wait; }
 .strategy { padding: 16px; border: 1px solid #263730; border-radius: 12px; background: #0d1311; }
 .strategy strong { display: block; margin-bottom: 6px; }
 .plan-bar { display: flex; gap: 12px; align-items: center; margin: 20px 0 12px; flex-wrap: wrap; }
+.settings-form { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 16px; margin-top: 22px; }
+.settings-form label { display: grid; gap: 7px; }
+.settings-form input { width: 100%; margin: 0; }
 .sync-status { margin: 8px 0 0; color: #92a09b; }
 .sync-status.error { color: #ff9b91; }
 .sync-status.success { color: #66e0b7; }
