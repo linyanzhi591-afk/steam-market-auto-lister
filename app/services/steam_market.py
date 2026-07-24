@@ -233,16 +233,25 @@ class SteamMarketService:
             None,
         ) or await context.new_page()
         if not page.url.startswith("https://steamcommunity.com/"):
-            try:
-                await page.goto(
-                    "https://steamcommunity.com/market/",
-                    wait_until="domcontentloaded",
-                    timeout=settings.request_timeout_seconds * 1000,
-                )
-            except PlaywrightError as exc:
+            navigation_error: PlaywrightError | None = None
+            for attempt in range(settings.request_retries + 1):
+                try:
+                    await page.goto(
+                        "https://steamcommunity.com/market/",
+                        wait_until="domcontentloaded",
+                        timeout=settings.request_timeout_seconds * 1000,
+                    )
+                    navigation_error = None
+                    break
+                except PlaywrightError as exc:
+                    navigation_error = exc
+                    if attempt < settings.request_retries:
+                        await asyncio.sleep(2**attempt)
+            if navigation_error is not None:
                 raise RuntimeError(
-                    "Steam 市场页面无法打开，请检查 Chromium 使用的 VPN/加速器"
-                ) from exc
+                    f"Steam 市场页面无法打开，已重试 {settings.request_retries} 次；"
+                    "请检查 Chromium 使用的 VPN/加速器"
+                ) from navigation_error
         last_error = "浏览器网络请求失败"
         for attempt in range(settings.request_retries + 1):
             try:

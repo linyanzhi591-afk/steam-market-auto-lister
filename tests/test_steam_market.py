@@ -101,6 +101,52 @@ def test_market_post_uses_logged_in_browser_page() -> None:
     assert payload == {"success": True}
 
 
+def test_market_post_retries_initial_navigation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        url = "about:blank"
+        navigation_calls = 0
+
+        async def goto(self, *_args, **_kwargs):
+            self.navigation_calls += 1
+            if self.navigation_calls == 1:
+                raise PlaywrightError("temporary failure")
+            self.url = "https://steamcommunity.com/market/"
+
+        async def evaluate(self, *_args, **_kwargs):
+            return {"ok": True, "status": 200, "payload": {"success": True}}
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = []
+            self.page = FakePage()
+
+        async def new_page(self):
+            return self.page
+
+    async def no_sleep(_seconds):
+        return None
+
+    original_retries = settings.request_retries
+    settings.request_retries = 1
+    monkeypatch.setattr("app.services.steam_market.asyncio.sleep", no_sleep)
+    context = FakeContext()
+    try:
+        service = SteamMarketService(session=object(), store=object())
+        payload = asyncio.run(
+            service._browser_post_form(
+                context,
+                "https://steamcommunity.com/market/sellitem/",
+                {"sessionid": "csrf-token"},
+            )
+        )
+    finally:
+        settings.request_retries = original_retries
+    assert payload == {"success": True}
+    assert context.page.navigation_calls == 2
+
+
 def test_parse_inventory_payload_joins_descriptions() -> None:
     payload = {
         "assets": [
