@@ -90,6 +90,13 @@ class Database:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS item_blacklist (
+                    appid INTEGER NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (appid, market_hash_name)
+                );
                 """
             )
             columns = {
@@ -139,10 +146,70 @@ class Database:
                 ],
             )
 
-    def inventory(self, *, marketable_only: bool = False) -> list[dict[str, object]]:
-        where = "WHERE marketable = 1" if marketable_only else ""
+    def inventory(
+        self,
+        *,
+        marketable_only: bool = False,
+        exclude_blacklisted: bool = True,
+    ) -> list[dict[str, object]]:
+        conditions: list[str] = []
+        if marketable_only:
+            conditions.append("inventory_assets.marketable = 1")
+        if exclude_blacklisted:
+            conditions.append(
+                """
+                NOT EXISTS (
+                    SELECT 1 FROM item_blacklist
+                    WHERE item_blacklist.appid = inventory_assets.appid
+                      AND item_blacklist.market_hash_name = inventory_assets.market_hash_name
+                )
+                """
+            )
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self.connect() as db:
             return [dict(row) for row in db.execute(f"SELECT * FROM inventory_assets {where}")]
+
+    def blacklist(self) -> list[dict[str, object]]:
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT appid, market_hash_name, created_at "
+                    "FROM item_blacklist ORDER BY appid, market_hash_name"
+                )
+            ]
+
+    def add_blacklist(self, appid: int, market_hash_name: str) -> None:
+        now = utc_now()
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO item_blacklist(appid, market_hash_name, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(appid, market_hash_name) DO NOTHING
+                """,
+                (appid, market_hash_name, now),
+            )
+            db.execute(
+                """
+                UPDATE listings SET state = ?, updated_at = ?
+                WHERE appid = ? AND market_hash_name = ? AND state = ?
+                """,
+                (
+                    ListingState.PAUSED.value,
+                    now,
+                    appid,
+                    market_hash_name,
+                    ListingState.PLANNED.value,
+                ),
+            )
+
+    def remove_blacklist(self, appid: int, market_hash_name: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM item_blacklist WHERE appid = ? AND market_hash_name = ?",
+                (appid, market_hash_name),
+            )
 
     def save_prices(
         self, appid: int, market_hash_name: str, currency: str, rows: list[tuple[str, int, int]]
@@ -263,7 +330,16 @@ class Database:
         with self.connect() as db:
             result = {
                 "sellable_items": db.execute(
-                    "SELECT COUNT(*) FROM inventory_assets WHERE marketable = 1"
+                    """
+                    SELECT COUNT(*) FROM inventory_assets
+                    WHERE marketable = 1
+                      AND NOT EXISTS (
+                        SELECT 1 FROM item_blacklist
+                        WHERE item_blacklist.appid = inventory_assets.appid
+                          AND item_blacklist.market_hash_name =
+                              inventory_assets.market_hash_name
+                      )
+                    """
                 ).fetchone()[0],
             }
             for state in ListingState:

@@ -7,6 +7,8 @@ from playwright.async_api import Error as PlaywrightError
 from app.core.config import settings
 from app.core.database import database
 from app.core.models import (
+    BlacklistEntry,
+    BlacklistRequest,
     Currency,
     DashboardSummary,
     ListingExecuteRequest,
@@ -71,6 +73,32 @@ def dashboard(currency: Currency = Currency.CNY) -> DashboardSummary:
 @router.get("/inventory")
 def inventory(marketable_only: bool = True) -> list[dict[str, object]]:
     return database.inventory(marketable_only=marketable_only)
+
+
+@router.get("/blacklist", response_model=list[BlacklistEntry])
+def blacklist() -> list[dict[str, object]]:
+    return database.blacklist()
+
+
+@router.post("/blacklist", response_model=BlacklistEntry)
+def add_blacklist(request: BlacklistRequest) -> BlacklistEntry:
+    database.add_blacklist(request.appid, request.market_hash_name)
+    database.audit(
+        "blacklist.add",
+        f"{request.appid}:{request.market_hash_name}",
+        {"appid": request.appid, "market_hash_name": request.market_hash_name},
+    )
+    return BlacklistEntry(appid=request.appid, market_hash_name=request.market_hash_name)
+
+
+@router.delete("/blacklist", status_code=204)
+def remove_blacklist(appid: int, market_hash_name: str) -> None:
+    database.remove_blacklist(appid, market_hash_name)
+    database.audit(
+        "blacklist.remove",
+        f"{appid}:{market_hash_name}",
+        {"appid": appid, "market_hash_name": market_hash_name},
+    )
 
 
 @router.post("/sync/inventory", response_model=SyncResult)

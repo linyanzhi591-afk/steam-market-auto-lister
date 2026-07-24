@@ -106,6 +106,17 @@ class SyncResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class BlacklistEntry(BaseModel):
+    appid: int
+    market_hash_name: str
+    created_at: datetime | None = None
+
+
+class BlacklistRequest(BaseModel):
+    appid: int
+    market_hash_name: str = Field(min_length=1)
+
+
 class SessionStatus(BaseModel):
     state: SessionState
     steam_id: str | None = None

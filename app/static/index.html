@@ -72,14 +72,29 @@
           <label>最低到账 <input id="minimum-price" type="number" min="0.01" step="0.01" value="0.01" /></label>
           <label>单件支付上限 <input id="maximum-price" type="number" min="0.03" step="0.01" value="1000" /></label>
           <label>批次上限 <input id="maximum-items" type="number" min="1" max="5000" value="2000" /></label>
-          <label>排除名称 <input id="excluded-names" class="wide-input" placeholder="用逗号分隔完整市场名称" /></label>
-          <button id="create-plans" type="button">为全部库存生成计划</button>
+          <button id="create-plans" type="button">为选择的库存生成计划</button>
         </div>
         <p id="sync-status" class="sync-status">尚未开始同步</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>游戏</th><th>物品</th><th>数量</th><th>可交易</th></tr></thead>
-            <tbody id="inventory-body"><tr><td colspan="4">尚未同步库存</td></tr></tbody>
+            <thead><tr><th><input id="select-all-inventory" type="checkbox" aria-label="全选库存" /></th><th>游戏</th><th>物品</th><th>数量</th><th>可交易</th><th>操作</th></tr></thead>
+            <tbody id="inventory-body"><tr><td colspan="6">尚未同步库存</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">BLACKLIST</p>
+            <h2>饰品黑名单</h2>
+          </div>
+          <span class="subtle">黑名单饰品不会出现在可出售库存，也不会生成新任务</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>游戏</th><th>物品</th><th>操作</th></tr></thead>
+            <tbody id="blacklist-body"><tr><td colspan="3">黑名单为空</td></tr></tbody>
           </table>
         </div>
       </section>

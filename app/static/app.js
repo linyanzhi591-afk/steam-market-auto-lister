@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 let currentListings = [];
+let groupedInventory = [];
 
 async function request(path, options = {}) {
   const response = await fetch(path, options);
@@ -23,6 +24,16 @@ const post = (path, body) => request(path, {
   headers: body ? { "Content-Type": "application/json" } : {},
   body: body ? JSON.stringify(body) : undefined,
 });
+const remove = (path) => request(path, { method: "DELETE" });
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
 function money(minor) {
   const symbol = $("#currency").value === "CNY" ? "¥" : "₹";
@@ -43,12 +54,13 @@ function renderSession(session) {
 }
 
 function renderInventory(items) {
-  const grouped = Array.from(items.reduce((groups, item) => {
+  groupedInventory = Array.from(items.reduce((groups, item) => {
     const key = `${item.appid}\u0000${item.market_hash_name}`;
     const current = groups.get(key);
     if (current) {
       current.amount += Number(item.amount);
       current.assetCount += 1;
+      current.assetids.push(String(item.assetid));
       current.tradable = current.tradable && Boolean(item.tradable);
     } else {
       groups.set(key, {
@@ -56,19 +68,35 @@ function renderInventory(items) {
         market_hash_name: item.market_hash_name,
         amount: Number(item.amount),
         assetCount: 1,
+        assetids: [String(item.assetid)],
         tradable: Boolean(item.tradable),
       });
     }
     return groups;
   }, new Map()).values());
 
-  $("#inventory-body").innerHTML = grouped.length
-    ? grouped.map((item) => `<tr>
-        <td>${item.appid}</td><td>${item.market_hash_name}</td>
+  $("#inventory-body").innerHTML = groupedInventory.length
+    ? groupedInventory.map((item, index) => `<tr>
+        <td><input class="inventory-select" type="checkbox" data-group-index="${index}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
+        <td>${item.appid}</td><td>${escapeHtml(item.market_hash_name)}</td>
         <td>${item.amount}${item.assetCount > 1 ? `（${item.assetCount} 个独立资产）` : ""}</td>
         <td>${item.tradable ? "是" : "否"}</td>
+        <td><button class="secondary blacklist-add" type="button" data-group-index="${index}">加入黑名单</button></td>
       </tr>`).join("")
-    : '<tr><td colspan="4">没有已同步的可出售库存</td></tr>';
+    : '<tr><td colspan="6">没有已同步的可出售库存</td></tr>';
+  $("#select-all-inventory").checked = false;
+  $("#select-all-inventory").indeterminate = false;
+}
+
+function renderBlacklist(items) {
+  $("#blacklist-body").innerHTML = items.length
+    ? items.map((item, index) => `<tr>
+        <td>${item.appid}</td>
+        <td>${escapeHtml(item.market_hash_name)}</td>
+        <td><button class="secondary blacklist-remove" type="button" data-blacklist-index="${index}">移出黑名单</button></td>
+      </tr>`).join("")
+    : '<tr><td colspan="3">黑名单为空</td></tr>';
+  $("#blacklist-body").dataset.items = JSON.stringify(items);
 }
 
 function renderListings(items) {
@@ -84,10 +112,11 @@ function renderListings(items) {
 async function load() {
   try {
     const currency = $("#currency").value;
-    const [health, session, dashboard, strategies, inventory, listings] = await Promise.all([
+    const [health, session, dashboard, strategies, inventory, listings, blacklist] = await Promise.all([
       getJSON("/api/health"), getJSON("/api/session"),
       getJSON(`/api/dashboard?currency=${currency}`), getJSON("/api/strategies"),
       getJSON("/api/inventory?marketable_only=true"), getJSON("/api/listings"),
+      getJSON("/api/blacklist"),
     ]);
     $("#health").textContent = health.status === "ok" ? "本地服务正常" : "服务异常";
     $("#mode-label").textContent = dashboard.dry_run ? "演练模式。" : "真实市场模式已启用。";
@@ -100,6 +129,7 @@ async function load() {
       .join("");
     renderInventory(inventory);
     renderListings(listings);
+    renderBlacklist(blacklist);
   } catch (error) {
     $("#health").textContent = error.message;
   }
@@ -170,17 +200,59 @@ $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), as
   await load();
 }));
 $("#create-plans").addEventListener("click", () => busy($("#create-plans"), async () => {
+  const selectedAssetids = Array.from(document.querySelectorAll(".inventory-select:checked"))
+    .flatMap((checkbox) => groupedInventory[Number(checkbox.dataset.groupIndex)].assetids);
+  if (!selectedAssetids.length) throw new Error("请先选择至少一项库存");
   const plans = await post("/api/listings/plan", {
+    assetids: selectedAssetids,
     strategy: $("#plan-strategy").value,
     currency: $("#currency").value,
     minimum_receive_minor: Math.round(Number($("#minimum-price").value) * 100),
     maximum_buyer_price_minor: Math.round(Number($("#maximum-price").value) * 100),
     maximum_items: Number($("#maximum-items").value),
-    excluded_names: $("#excluded-names").value.split(",").map((name) => name.trim()).filter(Boolean),
   });
   toast(`已生成 ${plans.length} 条上架计划`);
   await load();
 }));
+$("#select-all-inventory").addEventListener("change", (event) => {
+  document.querySelectorAll(".inventory-select").forEach((checkbox) => {
+    checkbox.checked = event.target.checked;
+  });
+});
+$("#inventory-body").addEventListener("change", () => {
+  const checkboxes = Array.from(document.querySelectorAll(".inventory-select"));
+  const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
+  $("#select-all-inventory").checked = checkboxes.length > 0 && checked === checkboxes.length;
+  $("#select-all-inventory").indeterminate = checked > 0 && checked < checkboxes.length;
+});
+$("#inventory-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".blacklist-add");
+  if (!button) return;
+  await busy(button, async () => {
+    const item = groupedInventory[Number(button.dataset.groupIndex)];
+    await post("/api/blacklist", {
+      appid: item.appid,
+      market_hash_name: item.market_hash_name,
+    });
+    toast(`${item.market_hash_name} 已加入黑名单`);
+    await load();
+  });
+});
+$("#blacklist-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".blacklist-remove");
+  if (!button) return;
+  await busy(button, async () => {
+    const items = JSON.parse($("#blacklist-body").dataset.items || "[]");
+    const item = items[Number(button.dataset.blacklistIndex)];
+    const query = new URLSearchParams({
+      appid: String(item.appid),
+      market_hash_name: item.market_hash_name,
+    });
+    await remove(`/api/blacklist?${query}`);
+    toast(`${item.market_hash_name} 已移出黑名单`);
+    await load();
+  });
+});
 $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), async () => {
   const ids = currentListings.filter((item) => item.state === "planned").map((item) => item.id);
   if (!ids.length) throw new Error("没有待提交计划");
