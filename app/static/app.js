@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let currentListings = [];
 let groupedInventory = [];
+let groupedActiveListings = [];
 let strategyProfiles = [];
 let editingStrategy = null;
 let currentAppSettings = null;
@@ -52,6 +53,22 @@ function displaySteamTime(value) {
   if (!value) return "Steam 未提供";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? escapeHtml(value) : parsed.toLocaleString();
+}
+
+function moneyRange(values) {
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  return minimum === maximum ? money(minimum) : `${money(minimum)} ～ ${money(maximum)}`;
+}
+
+function earliestTime(values) {
+  const available = values.filter(Boolean);
+  if (!available.length) return null;
+  const parseable = available
+    .map((value) => ({ value, timestamp: new Date(value).getTime() }))
+    .filter((item) => !Number.isNaN(item.timestamp))
+    .sort((left, right) => left.timestamp - right.timestamp);
+  return parseable[0]?.value || available[0];
 }
 
 function toast(message) {
@@ -208,6 +225,32 @@ function renderListings(items) {
     ["planned", "pending_confirmation", "failed"].includes(item.state)
   );
   const activeListings = items.filter((item) => item.state === "active");
+  groupedActiveListings = Array.from(activeListings.reduce((groups, item) => {
+    const key = `${item.appid}\u0000${item.market_hash_name}`;
+    const current = groups.get(key);
+    if (current) {
+      current.listingIds.push(item.id);
+      current.strategies.add(item.strategy);
+      current.sellerPrices.push(item.seller_price_minor);
+      current.buyerPrices.push(item.buyer_price_minor);
+      current.steamListedTimes.push(item.steam_listed_at);
+      current.nextActionTimes.push(item.next_action_at);
+      if (item.error_message) current.errors.add(item.error_message);
+    } else {
+      groups.set(key, {
+        appid: item.appid,
+        market_hash_name: item.market_hash_name,
+        listingIds: [item.id],
+        strategies: new Set([item.strategy]),
+        sellerPrices: [item.seller_price_minor],
+        buyerPrices: [item.buyer_price_minor],
+        steamListedTimes: [item.steam_listed_at],
+        nextActionTimes: [item.next_action_at],
+        errors: new Set(item.error_message ? [item.error_message] : []),
+      });
+    }
+    return groups;
+  }, new Map()).values());
   $("#new-listings-body").innerHTML = newListings.length
     ? newListings.map((item) => `<tr>
         <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
@@ -217,16 +260,20 @@ function renderListings(items) {
         )}</td>
       </tr>`).join("")
     : '<tr><td colspan="6">暂无新上架任务</td></tr>';
-  $("#active-listings-body").innerHTML = activeListings.length
-    ? activeListings.map((item) => `<tr>
-        <td><input class="active-select" type="checkbox" data-listing-id="${item.id}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
-        <td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
-        <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
-        <td>${displaySteamTime(item.steam_listed_at)}</td>
-        <td>${item.next_action_at ? new Date(item.next_action_at).toLocaleString() : "未设置"}</td>
-        <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(item.error_message || "")}</td>
+  $("#active-listings-body").innerHTML = groupedActiveListings.length
+    ? groupedActiveListings.map((item, index) => `<tr>
+        <td><input class="active-select" type="checkbox" data-group-index="${index}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
+        <td>${escapeHtml(item.market_hash_name)}</td>
+        <td>${item.listingIds.length}</td>
+        <td>${item.strategies.size === 1 ? [...item.strategies][0] : "多个策略"}</td>
+        <td>${moneyRange(item.sellerPrices)}</td><td>${moneyRange(item.buyerPrices)}</td>
+        <td>${displaySteamTime(earliestTime(item.steamListedTimes))}</td>
+        <td>${earliestTime(item.nextActionTimes)
+          ? displaySteamTime(earliestTime(item.nextActionTimes))
+          : "未设置"}</td>
+        <td class="${item.errors.size ? "error-text" : ""}">${escapeHtml([...item.errors].join("；"))}</td>
       </tr>`).join("")
-    : '<tr><td colspan="8">当前没有已同步的在售挂单</td></tr>';
+    : '<tr><td colspan="9">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }
@@ -346,7 +393,9 @@ $("#active-listings-body").addEventListener("change", () => {
 });
 $("#reprice-active").addEventListener("click", () => busy($("#reprice-active"), async () => {
   const ids = Array.from(document.querySelectorAll(".active-select:checked"))
-    .map((checkbox) => Number(checkbox.dataset.listingId));
+    .flatMap((checkbox) =>
+      groupedActiveListings[Number(checkbox.dataset.groupIndex)].listingIds
+    );
   if (!ids.length) throw new Error("请先选择至少一个当前在售挂单");
   const confirmation = window.prompt(
     "调价会先撤销原挂单，再按所选策略重新上架。输入“我确认执行真实市场操作”继续"
