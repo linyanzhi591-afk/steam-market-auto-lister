@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Steam 饰品自动上架</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">LOCAL MARKET CONTROL</p>
+          <h1>Steam 饰品自动上架</h1>
+          <p class="subtle">本机运行 · 手机手动确认 · 默认演练模式</p>
+        </div>
+        <span id="health" class="pill">正在检查服务</span>
+      </header>
+
+      <section class="notice">
+        <strong>当前是项目骨架。</strong>
+        Steam 登录、库存读取和真实上架尚未接入，系统不会对你的账号执行操作。
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <span>登录状态</span>
+          <strong id="session-state">读取中</strong>
+          <small id="session-message"></small>
+        </article>
+        <article class="card"><span>可出售</span><strong id="sellable">0</strong></article>
+        <article class="card"><span>待手机确认</span><strong id="pending">0</strong></article>
+        <article class="card"><span>当前在售</span><strong id="active">0</strong></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">PRICING ENGINE</p>
+            <h2>30 天定价策略</h2>
+          </div>
+          <select id="currency">
+            <option value="CNY">人民币 CNY</option>
+            <option value="INR">印度卢比 INR</option>
+          </select>
+        </div>
+        <div id="strategies" class="strategy-list"></div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
