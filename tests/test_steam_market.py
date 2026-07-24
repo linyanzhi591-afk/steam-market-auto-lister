@@ -80,6 +80,36 @@ def test_page_request_returns_json_payload() -> None:
     assert result == {"success": 1}
 
 
+def test_page_request_retries_http_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakePage:
+        calls = 0
+
+        async def evaluate(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"ok": False, "status": 500, "payload": None, "error": "HTTP 500"}
+            return {"ok": True, "status": 200, "payload": {"success": 1}, "error": None}
+
+    async def no_sleep(_seconds):
+        return None
+
+    original_retries = settings.request_retries
+    settings.request_retries = 1
+    monkeypatch.setattr("app.services.steam_market.asyncio.sleep", no_sleep)
+    page = FakePage()
+    try:
+        service = SteamMarketService(session=object(), store=object())
+        result = asyncio.run(
+            service._page_json_with_retry(
+                page, "https://steamcommunity.com/inventory/test"
+            )
+        )
+    finally:
+        settings.request_retries = original_retries
+    assert result == {"success": 1}
+    assert page.calls == 2
+
+
 def test_direct_navigation_parses_json_payload() -> None:
     class FakeResponse:
         ok = True

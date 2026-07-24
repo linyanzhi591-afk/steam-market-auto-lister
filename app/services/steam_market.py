@@ -161,7 +161,9 @@ class SteamMarketService:
     ) -> dict[str, Any]:
         """在已登录 Steam 页面内请求，复用浏览器的 Cookie、VPN 和代理网络栈。"""
         last_error = "未知网络错误"
+        attempts = 0
         for attempt in range(settings.request_retries + 1):
+            attempts = attempt + 1
             result = await page.evaluate(
                 """
                 async ({url, params, timeoutMs}) => {
@@ -209,11 +211,13 @@ class SteamMarketService:
             if result.get("ok"):
                 return dict(result["payload"])
             last_error = str(result.get("error") or f"HTTP {result.get('status', 0)}")
-            if result.get("status", 0) != 0 or attempt >= settings.request_retries:
+            status = int(result.get("status", 0))
+            retryable = status == 0 or status == 429 or status >= 500
+            if not retryable or attempt >= settings.request_retries:
                 break
             await asyncio.sleep(2**attempt)
         raise RuntimeError(
-            f"{last_error}，已重试 {settings.request_retries} 次；"
+            f"{last_error}，共尝试 {attempts} 次；"
             "请检查 Steam 社区连接或 VPN/加速器规则"
         )
 
@@ -273,10 +277,14 @@ class SteamMarketService:
         async with self.session.browser_context() as context:
             inventory_contexts = await self._inventory_contexts(context, status.steam_id)
             page = context.pages[0] if context.pages else await context.new_page()
+            await asyncio.sleep(settings.request_delay_seconds)
             for appid, contextid in inventory_contexts:
                 start_assetid: str | None = None
                 while True:
-                    params: dict[str, object] = {"l": "schinese", "count": 2000}
+                    params: dict[str, object] = {
+                        "l": "schinese",
+                        "count": settings.inventory_page_size,
+                    }
                     if start_assetid:
                         params["start_assetid"] = start_assetid
                     try:

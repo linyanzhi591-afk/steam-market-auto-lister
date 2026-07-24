@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     request_delay_seconds: float = 1.5
     request_timeout_seconds: int = 30
     request_retries: int = 2
+    inventory_page_size: int = 500
     default_currency: str = "CNY"
     max_batch_items: int = 2000
     max_unit_buyer_price_minor: int = 100_000

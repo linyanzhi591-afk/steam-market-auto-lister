@@ -123,6 +123,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 | `STEAM_LISTER_REQUEST_DELAY_SECONDS` | `1.5` | Steam 请求间隔 |
 | `STEAM_LISTER_REQUEST_TIMEOUT_SECONDS` | `30` | 单次 Steam 请求超时 |
 | `STEAM_LISTER_REQUEST_RETRIES` | `2` | 网络失败后的重试次数 |
+| `STEAM_LISTER_INVENTORY_PAGE_SIZE` | `500` | 单页库存数量，降低 Steam 500 概率 |
 | `STEAM_LISTER_MAX_BATCH_ITEMS` | `2000` | 默认批次上限 |
 | `STEAM_LISTER_MAX_UNIT_BUYER_PRICE_MINOR` | `100000` | 单件买家支付上限，使用最小货币单位 |
 
