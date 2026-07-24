@@ -120,18 +120,37 @@
       <section class="panel view-main">
         <div class="panel-title">
           <div>
-            <p class="eyebrow">LISTINGS</p>
-            <h2>上架任务</h2>
+            <p class="eyebrow">NEW LISTINGS</p>
+            <h2>新上架任务</h2>
           </div>
           <div class="actions">
-            <button id="sync-listings" class="secondary" type="button">同步挂单状态</button>
             <button id="execute-plans" class="danger" type="button">执行所有待提交计划</button>
           </div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>卖家到账</th><th>买家支付</th></tr></thead>
-            <tbody id="listings-body"><tr><td colspan="5">暂无任务</td></tr></tbody>
+            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
+            <tbody id="new-listings-body"><tr><td colspan="6">暂无新上架任务</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel view-main">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">ACTIVE LISTINGS</p>
+            <h2>Steam 当前在售与调价</h2>
+          </div>
+          <div class="actions">
+            <button id="sync-listings" class="secondary" type="button">同步当前在售</button>
+            <select id="reprice-strategy" aria-label="调价策略"></select>
+            <button id="reprice-active" class="danger" type="button">调整选择的在售价</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th><input id="select-all-active" type="checkbox" aria-label="全选当前在售" /></th><th>物品</th><th>策略</th><th>卖家到账</th><th>买家支付</th><th>下次动作</th><th>结果</th></tr></thead>
+            <tbody id="active-listings-body"><tr><td colspan="7">尚未同步当前在售</td></tr></tbody>
           </table>
         </div>
       </section>

@@ -133,10 +133,12 @@ function renderStrategySelectors() {
   ).join("");
   $("#strategy-profile-select").innerHTML = options;
   $("#plan-strategy").innerHTML = options;
+  $("#reprice-strategy").innerHTML = options;
   const selected = editingStrategy || strategyProfiles.find((profile) => profile.is_default) || strategyProfiles[0];
   if (selected) {
     $("#strategy-profile-select").value = String(selected.id || "");
     $("#plan-strategy").value = String(selected.id || "");
+    $("#reprice-strategy").value = String(selected.id || "");
   }
 }
 
@@ -196,12 +198,30 @@ function collectStrategyEditor() {
 
 function renderListings(items) {
   currentListings = items;
-  $("#listings-body").innerHTML = items.length
-    ? items.map((item) => `<tr>
-        <td>${item.state}</td><td>${item.market_hash_name}</td><td>${item.strategy}</td>
+  const newListings = items.filter((item) =>
+    ["planned", "pending_confirmation", "failed"].includes(item.state)
+  );
+  const activeListings = items.filter((item) => item.state === "active");
+  $("#new-listings-body").innerHTML = newListings.length
+    ? newListings.map((item) => `<tr>
+        <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
         <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
+        <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
+          item.error_message || (item.state === "pending_confirmation" ? "等待 Steam 手机确认" : "")
+        )}</td>
       </tr>`).join("")
-    : '<tr><td colspan="5">暂无任务</td></tr>';
+    : '<tr><td colspan="6">暂无新上架任务</td></tr>';
+  $("#active-listings-body").innerHTML = activeListings.length
+    ? activeListings.map((item) => `<tr>
+        <td><input class="active-select" type="checkbox" data-listing-id="${item.id}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
+        <td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
+        <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
+        <td>${item.next_action_at ? new Date(item.next_action_at).toLocaleString() : "未设置"}</td>
+        <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(item.error_message || "")}</td>
+      </tr>`).join("")
+    : '<tr><td colspan="7">当前没有已同步的在售挂单</td></tr>';
+  $("#select-all-active").checked = false;
+  $("#select-all-active").indeterminate = false;
 }
 
 async function load() {
@@ -304,6 +324,37 @@ $("#sync-prices").addEventListener("click", () => busy($("#sync-prices"), async 
 $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), async () => {
   const result = await post("/api/sync/listings");
   toast(`已更新 ${result.listings_updated} 条挂单状态`);
+  await load();
+}));
+$("#select-all-active").addEventListener("change", (event) => {
+  document.querySelectorAll(".active-select").forEach((checkbox) => {
+    checkbox.checked = event.target.checked;
+  });
+});
+$("#active-listings-body").addEventListener("change", () => {
+  const checkboxes = Array.from(document.querySelectorAll(".active-select"));
+  const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
+  $("#select-all-active").checked = checkboxes.length > 0 && checked === checkboxes.length;
+  $("#select-all-active").indeterminate = checked > 0 && checked < checkboxes.length;
+});
+$("#reprice-active").addEventListener("click", () => busy($("#reprice-active"), async () => {
+  const ids = Array.from(document.querySelectorAll(".active-select:checked"))
+    .map((checkbox) => Number(checkbox.dataset.listingId));
+  if (!ids.length) throw new Error("请先选择至少一个当前在售挂单");
+  const confirmation = window.prompt(
+    "调价会先撤销原挂单，再按所选策略重新上架。输入“我确认执行真实市场操作”继续"
+  );
+  if (!confirmation) return;
+  const results = await post("/api/listings/reprice", {
+    listing_ids: ids,
+    strategy_profile_id: Number($("#reprice-strategy").value),
+    currency: $("#currency").value,
+    confirmation_text: confirmation,
+  });
+  const failures = results.filter((item) => item.error_message);
+  toast(failures.length
+    ? `调价完成，但 ${failures.length} 项失败，请查看结果栏`
+    : `已提交 ${results.length} 项调价，等待手机确认`);
   await load();
 }));
 $("#create-plans").addEventListener("click", () => busy($("#create-plans"), async () => {
@@ -434,11 +485,20 @@ document.querySelectorAll(".view-tab").forEach((button) => {
   });
 });
 $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), async () => {
-  const ids = currentListings.filter((item) => item.state === "planned").map((item) => item.id);
+  const ids = currentListings
+    .filter((item) => ["planned", "failed"].includes(item.state))
+    .map((item) => item.id);
   if (!ids.length) throw new Error("没有待提交计划");
   const confirmation = window.prompt("输入“我确认执行真实市场操作”以提交所有计划；提交后仍需手机确认");
   if (!confirmation) return;
-  await post("/api/listings/execute", { listing_ids: ids, confirmation_text: confirmation });
+  const results = await post("/api/listings/execute", {
+    listing_ids: ids,
+    confirmation_text: confirmation,
+  });
+  const failures = results.filter((item) => item.state === "failed");
+  toast(failures.length
+    ? `${failures.length} 项提交失败，请查看“结果/失败原因”`
+    : `已提交 ${results.length} 项，等待 Steam 手机确认`);
   await load();
 }));
 load();

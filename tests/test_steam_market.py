@@ -7,9 +7,49 @@ from playwright.async_api import Error as PlaywrightError
 from app.core.config import settings
 from app.services.steam_market import (
     SteamMarketService,
+    enrich_active_listing_rows,
     parse_inventory_payload,
     parse_price_history,
 )
+
+
+def test_active_listing_rows_are_enriched_and_deduplicated() -> None:
+    payload = {
+        "listinginfo": {
+            "9001": {
+                "listingid": "9001",
+                "converted_price": 609,
+                "converted_fee": 91,
+                "asset": {"appid": 730, "contextid": "2", "id": "100"},
+            }
+        },
+        "assets": {
+            "730": {
+                "2": {
+                    "100": {
+                        "market_hash_name": "P250 | Constructivist (Minimal Wear)"
+                    }
+                }
+            }
+        },
+    }
+    html_rows = [
+        {"listing_id": "9001", "market_hash_name": "", "display_price": "₹7.00"},
+        {"listing_id": "9001", "market_hash_name": ""},
+        {"listing_id": "9001_name", "market_hash_name": ""},
+    ]
+    rows = enrich_active_listing_rows(payload, html_rows)
+    assert rows == [
+        {
+            "listing_id": "9001",
+            "market_hash_name": "P250 | Constructivist (Minimal Wear)",
+            "display_price": "₹7.00",
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "100",
+            "buyer_price_minor": 700,
+        }
+    ]
 
 
 def test_parse_inventory_payload_joins_descriptions() -> None:

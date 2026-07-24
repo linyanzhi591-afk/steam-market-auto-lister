@@ -87,6 +87,7 @@ class Database:
                     buyer_price_minor INTEGER NOT NULL,
                     minimum_receive_minor INTEGER NOT NULL DEFAULT 1,
                     steam_listing_id TEXT,
+                    error_message TEXT,
                     active_since TEXT,
                     next_action_at TEXT,
                     created_at TEXT NOT NULL,
@@ -147,6 +148,8 @@ class Database:
                 )
             if "strategy_profile_id" not in columns:
                 db.execute("ALTER TABLE listings ADD COLUMN strategy_profile_id INTEGER")
+            if "error_message" not in columns:
+                db.execute("ALTER TABLE listings ADD COLUMN error_message TEXT")
             profile_count = db.execute("SELECT COUNT(*) FROM strategy_profiles").fetchone()[0]
             if profile_count == 0:
                 now = utc_now()
@@ -497,35 +500,65 @@ class Database:
                     "SELECT id FROM listings WHERE steam_listing_id = ?",
                     (steam_listing_id,),
                 ).fetchone()
-                if existing:
-                    db.execute(
-                        "UPDATE listings SET state = ?, updated_at = ? WHERE id = ?",
-                        (ListingState.ACTIVE.value, utc_now(), existing["id"]),
-                    )
-                    continue
-                assetid = str(item.get("assetid") or f"external:{steam_listing_id}")
+                remote_assetid = str(item.get("assetid") or "")
+                assetid = remote_assetid or f"external:{steam_listing_id}"
                 appid = int(item.get("appid") or 0)
-                contextid = str(item.get("contextid") or "0")
-                market_hash_name = str(item.get("market_hash_name") or "未知在售物品")
-                number_match = re.search(
-                    r"\d[\d,.]*", str(item.get("display_price") or "")
-                )
-                buyer_price = 0
-                if number_match:
-                    numeric = number_match.group(0)
-                    if "," in numeric and "." not in numeric:
-                        numeric = numeric.replace(",", ".")
-                    else:
-                        numeric = numeric.replace(",", "")
-                    try:
-                        buyer_price = round(float(numeric) * 100)
-                    except ValueError:
-                        buyer_price = 0
+                remote_contextid = str(item.get("contextid") or "")
+                contextid = remote_contextid or "0"
+                remote_name = str(item.get("market_hash_name") or "")
+                market_hash_name = remote_name or "未知在售物品"
+                buyer_price = int(item.get("buyer_price_minor") or 0)
+                if buyer_price <= 0:
+                    number_match = re.search(
+                        r"\d[\d,.]*", str(item.get("display_price") or "")
+                    )
+                    if number_match:
+                        numeric = number_match.group(0)
+                        if "," in numeric and "." not in numeric:
+                            numeric = numeric.replace(",", ".")
+                        else:
+                            numeric = numeric.replace(",", "")
+                        try:
+                            buyer_price = round(float(numeric) * 100)
+                        except ValueError:
+                            buyer_price = 0
                 seller_price = max(1, buyer_price)
                 if buyer_price >= 3:
                     from app.services.pricing import seller_receive_for_buyer_pay
 
                     seller_price = seller_receive_for_buyer_pay(buyer_price)
+                if existing:
+                    db.execute(
+                        """
+                        UPDATE listings SET
+                            state = ?,
+                            assetid = CASE WHEN ? != '' THEN ? ELSE assetid END,
+                            appid = CASE WHEN ? != 0 THEN ? ELSE appid END,
+                            contextid = CASE WHEN ? != '' THEN ? ELSE contextid END,
+                            market_hash_name = CASE WHEN ? != '' THEN ? ELSE market_hash_name END,
+                            seller_price_minor = ?,
+                            buyer_price_minor = ?,
+                            error_message = NULL,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            ListingState.ACTIVE.value,
+                            remote_assetid,
+                            remote_assetid,
+                            appid,
+                            appid,
+                            remote_contextid,
+                            remote_contextid,
+                            remote_name,
+                            remote_name,
+                            seller_price,
+                            max(buyer_price, seller_price),
+                            utc_now(),
+                            existing["id"],
+                        ),
+                    )
+                    continue
                 try:
                     db.execute(
                         """
@@ -585,6 +618,7 @@ class Database:
             "buyer_price_minor",
             "minimum_receive_minor",
             "steam_listing_id",
+            "error_message",
             "active_since",
             "next_action_at",
         }

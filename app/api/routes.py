@@ -15,6 +15,7 @@ from app.core.models import (
     ListingExecuteRequest,
     ListingPlanRequest,
     ListingRecord,
+    ListingRepriceRequest,
     ListingState,
     PriceDecision,
     PricePoint,
@@ -211,6 +212,21 @@ def delete_strategy_profile(profile_id: int) -> None:
 async def execute_listing_plans(request: ListingExecuteRequest) -> list[ListingRecord]:
     try:
         return await listing_manager.execute(request.listing_ids, request.confirmation_text)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/listings/reprice", response_model=list[ListingRecord])
+async def reprice_active_listings(
+    request: ListingRepriceRequest,
+) -> list[ListingRecord]:
+    try:
+        return await listing_manager.reprice_active(
+            request.listing_ids,
+            request.strategy_profile_id,
+            request.currency,
+            request.confirmation_text,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 

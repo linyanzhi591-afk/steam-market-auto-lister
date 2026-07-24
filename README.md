@@ -21,6 +21,8 @@
 - 独立设置界面，集中管理钱包币种、策略方案和黑名单。
 - 自由组合多阶段策略：算法、百分比/固定调价、绝对底价、中位价保护、持续时间和到期动作均可配置。
 - 同步 Steam“我的在售”，自动导入并跟踪不是由本程序创建的现有挂单。
+- 新上架任务与 Steam 当前在售分区显示；当前在售支持多选、全选并按指定策略调价。
+- Steam 提交失败时在任务结果栏保留具体原因，失败任务可直接重试。
 - 登录或自动恢复 Steam 后检测钱包币种，支持自动选择 CNY/INR。
 - 每次启动清理库存、价格缓存和未提交计划；保留真实挂单跟踪、黑名单及设置。
 - 待手机确认、在售、售出、暂停和失败状态。
@@ -72,6 +74,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 “设置”页可修改默认币种、管理黑名单，并新建、复制、编辑或删除策略方案。Steam 登录成功后会优先按钱包实际币种更新设置。
 
 “同步当前在售”会从 Steam“我的在售”分页读取全部挂单。程序启动前或在 Steam 网页端创建的挂单也会导入本地任务列表；重复同步不会重复创建。
+
+当前在售的调价会先撤销原挂单，再按选择的策略重新上架，因此仍需前往 Steam 手机客户端确认。为避免意外撤单，只有手动勾选的当前在售会被调整。
 
 演练模式不会向 Steam 提交挂单或撤单。
 
@@ -151,6 +155,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 - `GET /api/inventory`
 - `POST /api/listings/plan`
 - `POST /api/listings/execute`
+- `POST /api/listings/reprice`
 - `POST /api/sync/listings`
 - `GET /api/strategy-profiles`
 - `POST /api/strategy-profiles`

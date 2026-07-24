@@ -163,7 +163,10 @@ class ListingManager:
         results: list[ListingRecord] = []
         for listing_id in listing_ids:
             record = self.store.listing(listing_id)
-            if not record or record.state is not ListingState.PLANNED:
+            if not record or record.state not in {
+                ListingState.PLANNED,
+                ListingState.FAILED,
+            }:
                 continue
             try:
                 payload = await self.market.create_listing(
@@ -177,6 +180,7 @@ class ListingManager:
                     record.id,
                     state=ListingState.PENDING_CONFIRMATION,
                     steam_listing_id=str(steam_listing_id) if steam_listing_id else None,
+                    error_message=None,
                 )
                 self.store.audit(
                     "listing.submit",
@@ -184,12 +188,87 @@ class ListingManager:
                     {"listing_id": record.id, "steam_listing_id": steam_listing_id},
                 )
             except (PermissionError, RuntimeError) as exc:
-                self.store.update_listing(record.id, state=ListingState.FAILED)
+                self.store.update_listing(
+                    record.id,
+                    state=ListingState.FAILED,
+                    error_message=str(exc),
+                )
                 self.store.audit("listing.submit_failed", record.assetid, {"error": str(exc)})
             updated = self.store.listing(record.id)
             if updated:
                 results.append(updated)
         return results
+
+    async def reprice_active(
+        self,
+        listing_ids: list[int],
+        strategy_profile_id: int | None,
+        currency: Currency,
+        confirmation_text: str,
+    ) -> list[ListingRecord]:
+        if confirmation_text != EXECUTE_CONFIRMATION:
+            raise PermissionError("真实市场操作确认文本不匹配")
+        if settings.dry_run or not settings.allow_market_writes:
+            raise PermissionError("真实市场操作未启用")
+        profile_id, stages = self.stages(strategy_profile_id)
+        first_stage = stages[0]
+        resubmit_ids: list[int] = []
+        for listing_id in listing_ids:
+            record = self.store.listing(listing_id)
+            if not record or record.state is not ListingState.ACTIVE:
+                continue
+            if (
+                not record.steam_listing_id
+                or not record.assetid
+                or record.assetid.startswith("external:")
+                or record.appid <= 0
+                or not record.contextid
+            ):
+                self.store.update_listing(
+                    record.id,
+                    error_message="Steam 在售信息不完整，请先重新同步当前在售",
+                )
+                continue
+            try:
+                await self.market.update_price_history(
+                    record.appid, record.market_hash_name, currency
+                )
+                points = _as_points(
+                    self.store.prices(
+                        record.appid, record.market_hash_name, currency.value
+                    )
+                )
+                if not points:
+                    raise RuntimeError("没有可用的最近 30 天价格数据")
+                seller_price, buyer_price = self.stage_price(
+                    first_stage,
+                    points,
+                    minimum_receive_minor=record.minimum_receive_minor,
+                )
+                await self.market.cancel_listing(record.steam_listing_id)
+                self.store.update_listing(
+                    record.id,
+                    state=ListingState.PLANNED,
+                    strategy=first_stage.pricing_source,
+                    strategy_profile_id=profile_id,
+                    stage=0,
+                    seller_price_minor=seller_price,
+                    buyer_price_minor=buyer_price,
+                    steam_listing_id=None,
+                    active_since=None,
+                    next_action_at=None,
+                    error_message=None,
+                )
+                resubmit_ids.append(record.id)
+            except (PermissionError, RuntimeError) as exc:
+                self.store.update_listing(record.id, error_message=str(exc))
+        if resubmit_ids:
+            return await self.execute(resubmit_ids, confirmation_text)
+        return [
+            record
+            for listing_id in listing_ids
+            if (record := self.store.listing(listing_id))
+        ]
 
     async def sync_states(self) -> SyncResult:
         remote = await self.market.active_listings()

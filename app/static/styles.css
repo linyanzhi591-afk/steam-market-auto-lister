@@ -50,6 +50,7 @@ button:disabled { opacity: .5; cursor: wait; }
 .sync-status { margin: 8px 0 0; color: #92a09b; }
 .sync-status.error { color: #ff9b91; }
 .sync-status.success { color: #66e0b7; }
+.error-text { color: #ff9b91; max-width: 34rem; white-space: normal; }
 label { color: #92a09b; }
 input { width: 100px; margin-left: 6px; background: #111a17; border: 1px solid #2b4139; color: white; padding: 9px; border-radius: 9px; }
 th input, td input { width: auto; margin: 0; accent-color: #66e0b7; }

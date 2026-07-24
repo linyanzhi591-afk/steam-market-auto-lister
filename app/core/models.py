@@ -83,6 +83,7 @@ class ListingRecord(BaseModel):
     buyer_price_minor: int
     minimum_receive_minor: int = 1
     steam_listing_id: str | None = None
+    error_message: str | None = None
     active_since: datetime | None = None
     next_action_at: datetime | None = None
     created_at: datetime
@@ -102,6 +103,13 @@ class ListingPlanRequest(BaseModel):
 
 class ListingExecuteRequest(BaseModel):
     listing_ids: list[int]
+    confirmation_text: str
+
+
+class ListingRepriceRequest(BaseModel):
+    listing_ids: list[int] = Field(min_length=1)
+    strategy_profile_id: int | None = None
+    currency: Currency = Currency.CNY
     confirmation_text: str
 
 

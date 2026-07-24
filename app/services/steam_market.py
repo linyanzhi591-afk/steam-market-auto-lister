@@ -75,6 +75,74 @@ def parse_price_history(payload: dict[str, Any]) -> list[tuple[str, int, int]]:
     return rows
 
 
+def enrich_active_listing_rows(
+    payload: dict[str, Any], html_rows: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """用接口中的结构化 listinginfo/assets 补全 HTML 行。"""
+    assets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for appid, contexts in (payload.get("assets") or {}).items():
+        if not isinstance(contexts, dict):
+            continue
+        for contextid, context_assets in contexts.items():
+            if not isinstance(context_assets, dict):
+                continue
+            for assetid, asset in context_assets.items():
+                if isinstance(asset, dict):
+                    assets[(str(appid), str(contextid), str(assetid))] = asset
+
+    structured: dict[str, dict[str, Any]] = {}
+    raw_listinginfo = payload.get("listinginfo") or {}
+    listing_values = (
+        raw_listinginfo.values()
+        if isinstance(raw_listinginfo, dict)
+        else raw_listinginfo
+        if isinstance(raw_listinginfo, list)
+        else []
+    )
+    for info in listing_values:
+        if isinstance(info, dict) and info.get("listingid"):
+            structured[str(info["listingid"])] = info
+
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_row in html_rows:
+        listing_id = str(raw_row.get("listing_id") or "")
+        if not listing_id.isdigit() or listing_id in seen:
+            continue
+        seen.add(listing_id)
+        info = structured.get(listing_id, {})
+        asset_ref = info.get("asset") if isinstance(info.get("asset"), dict) else {}
+        appid = str(asset_ref.get("appid") or raw_row.get("appid") or "0")
+        contextid = str(asset_ref.get("contextid") or raw_row.get("contextid") or "")
+        assetid = str(
+            asset_ref.get("id")
+            or asset_ref.get("assetid")
+            or raw_row.get("assetid")
+            or ""
+        )
+        asset = assets.get((appid, contextid, assetid), {})
+        name = str(
+            asset.get("market_hash_name")
+            or asset.get("name")
+            or raw_row.get("market_hash_name")
+            or ""
+        )
+        converted_price = int(info.get("converted_price") or 0)
+        converted_fee = int(info.get("converted_fee") or 0)
+        result.append(
+            {
+                **raw_row,
+                "listing_id": listing_id,
+                "appid": int(appid or 0),
+                "contextid": contextid,
+                "assetid": assetid,
+                "market_hash_name": name,
+                "buyer_price_minor": converted_price + converted_fee,
+            }
+        )
+    return result
+
+
 class SteamMarketService:
     def __init__(
         self,
@@ -420,21 +488,32 @@ class SteamMarketService:
             )
             if not session_id:
                 raise RuntimeError("Steam 会话缺少 sessionid")
-            response = await context.request.post(
-                "https://steamcommunity.com/market/sellitem/",
-                form={
-                    "sessionid": session_id,
-                    "appid": str(appid),
-                    "contextid": contextid,
-                    "assetid": assetid,
-                    "amount": "1",
-                    "price": str(seller_price_minor),
-                },
-                headers={"Referer": f"https://steamcommunity.com/profiles/{self.session.status().steam_id}/inventory/"},
-            )
-            payload = await response.json()
+            try:
+                response = await context.request.post(
+                    "https://steamcommunity.com/market/sellitem/",
+                    form={
+                        "sessionid": session_id,
+                        "appid": str(appid),
+                        "contextid": contextid,
+                        "assetid": assetid,
+                        "amount": "1",
+                        "price": str(seller_price_minor),
+                    },
+                    headers={"Referer": f"https://steamcommunity.com/profiles/{self.session.status().steam_id}/inventory/"},
+                )
+            except PlaywrightError as exc:
+                raise RuntimeError(
+                    "连接 Steam 上架接口失败，请检查 VPN/加速器是否覆盖登录浏览器"
+                ) from exc
+            if not response.ok:
+                raise RuntimeError(f"Steam 上架接口返回 HTTP {response.status}")
+            try:
+                payload = await response.json()
+            except PlaywrightError as exc:
+                raise RuntimeError("Steam 上架接口没有返回有效 JSON，请重新登录后重试") from exc
         if not payload.get("success"):
-            raise RuntimeError(f"Steam 拒绝上架：{payload}")
+            reason = payload.get("message") or payload.get("error") or "未提供原因"
+            raise RuntimeError(f"Steam 拒绝上架：{reason}")
         return payload
 
     async def cancel_listing(self, steam_listing_id: str) -> None:
@@ -473,9 +552,9 @@ class SteamMarketService:
                     page_rows = await parser_page.evaluate(
                         """
                         () => Array.from(
-                          document.querySelectorAll('[id^="mylisting_"]')
+                          document.querySelectorAll('.market_listing_row[id^="mylisting_"]')
                         ).map(row => {
-                          const listingId = row.id.replace('mylisting_', '');
+                          const listingId = (row.id.match(/^mylisting_(\\d+)$/) || [])[1] || '';
                           const name = row.querySelector(
                             '.market_listing_item_name'
                           )?.textContent?.trim() || '';
@@ -511,7 +590,7 @@ class SteamMarketService:
                         })
                         """
                     )
-                    listings.extend(page_rows)
+                    listings.extend(enrich_active_listing_rows(payload, page_rows))
                     total = int(payload.get("total_count", len(listings)))
                     start += len(page_rows)
                     if not page_rows or start >= total:
