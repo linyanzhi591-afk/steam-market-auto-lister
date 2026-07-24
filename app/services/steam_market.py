@@ -150,6 +150,71 @@ class SteamMarketService:
             )
         return result
 
+    async def _page_json_with_retry(
+        self,
+        page: Any,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        """在已登录 Steam 页面内请求，复用浏览器的 Cookie、VPN 和代理网络栈。"""
+        last_error = "未知网络错误"
+        for attempt in range(settings.request_retries + 1):
+            result = await page.evaluate(
+                """
+                async ({url, params, timeoutMs}) => {
+                  const controller = new AbortController();
+                  const timer = setTimeout(() => controller.abort(), timeoutMs);
+                  try {
+                    const target = new URL(url);
+                    for (const [key, value] of Object.entries(params || {})) {
+                      target.searchParams.set(key, String(value));
+                    }
+                    const response = await fetch(target.toString(), {
+                      credentials: 'include',
+                      signal: controller.signal,
+                      headers: {'Accept': 'application/json'}
+                    });
+                    const text = await response.text();
+                    let payload = null;
+                    try {
+                      payload = JSON.parse(text);
+                    } catch {
+                      return {
+                        ok: false,
+                        status: response.status,
+                        error: `Steam 返回了非 JSON 内容（HTTP ${response.status}）`
+                      };
+                    }
+                    return {ok: response.ok, status: response.status, payload, error: null};
+                  } catch (error) {
+                    return {
+                      ok: false,
+                      status: 0,
+                      error: error?.name === 'AbortError' ? '请求超时' : '浏览器网络请求失败'
+                    };
+                  } finally {
+                    clearTimeout(timer);
+                  }
+                }
+                """,
+                {
+                    "url": url,
+                    "params": params or {},
+                    "timeoutMs": settings.request_timeout_seconds * 1000,
+                },
+            )
+            if result.get("ok"):
+                return dict(result["payload"])
+            last_error = str(result.get("error") or f"HTTP {result.get('status', 0)}")
+            if result.get("status", 0) != 0 or attempt >= settings.request_retries:
+                break
+            await asyncio.sleep(2**attempt)
+        raise RuntimeError(
+            f"{last_error}，已重试 {settings.request_retries} 次；"
+            "登录页面可用但库存请求仍失败时，请检查 VPN 是否覆盖独立 Chromium"
+        )
+
     async def scan_inventory(self) -> SyncResult:
         status = self.session.status()
         if not status.steam_id:
@@ -158,6 +223,7 @@ class SteamMarketService:
         errors: list[str] = []
         async with self.session.browser_context() as context:
             inventory_contexts = await self._inventory_contexts(context, status.steam_id)
+            page = context.pages[0] if context.pages else await context.new_page()
             for appid, contextid in inventory_contexts:
                 start_assetid: str | None = None
                 while True:
@@ -165,18 +231,20 @@ class SteamMarketService:
                     if start_assetid:
                         params["start_assetid"] = start_assetid
                     try:
-                        response = await self._get_with_retry(
-                            context.request,
-                        f"https://steamcommunity.com/inventory/{status.steam_id}/{appid}/{contextid}",
+                        payload = await self._page_json_with_retry(
+                            page,
+                            (
+                                f"https://steamcommunity.com/inventory/"
+                                f"{status.steam_id}/{appid}/{contextid}"
+                            ),
                             params=params,
                         )
                     except RuntimeError as exc:
                         errors.append(f"{appid}/{contextid}: {exc}")
                         break
-                    if not response.ok:
-                        errors.append(f"{appid}/{contextid}: HTTP {response.status}")
+                    if not payload.get("success"):
+                        errors.append(f"{appid}/{contextid}: Steam 返回库存读取失败")
                         break
-                    payload = await response.json()
                     assets.extend(parse_inventory_payload(appid, contextid, payload))
                     if not payload.get("more_items"):
                         break

@@ -66,3 +66,15 @@ def test_timeout_is_converted_to_readable_error() -> None:
             asyncio.run(service._get_with_retry(FailingRequest(), "https://example.invalid"))
     finally:
         settings.request_retries = original_retries
+
+
+def test_page_request_returns_json_payload() -> None:
+    class FakePage:
+        async def evaluate(self, *_args, **_kwargs):
+            return {"ok": True, "status": 200, "payload": {"success": 1}, "error": None}
+
+    service = SteamMarketService(session=object(), store=object())
+    result = asyncio.run(
+        service._page_json_with_retry(FakePage(), "https://steamcommunity.com/inventory/test")
+    )
+    assert result == {"success": 1}
