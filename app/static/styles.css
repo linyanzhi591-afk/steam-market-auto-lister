@@ -31,6 +31,9 @@ button:disabled { opacity: .5; cursor: wait; }
 .strategy { padding: 16px; border: 1px solid #263730; border-radius: 12px; background: #0d1311; }
 .strategy strong { display: block; margin-bottom: 6px; }
 .plan-bar { display: flex; gap: 12px; align-items: center; margin: 20px 0 12px; flex-wrap: wrap; }
+.sync-status { margin: 8px 0 0; color: #92a09b; }
+.sync-status.error { color: #ff9b91; }
+.sync-status.success { color: #66e0b7; }
 label { color: #92a09b; }
 input { width: 100px; margin-left: 6px; background: #111a17; border: 1px solid #2b4139; color: white; padding: 9px; border-radius: 9px; }
 input.wide-input { width: 260px; }

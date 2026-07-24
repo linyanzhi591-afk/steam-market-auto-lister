@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from playwright.async_api import Error as PlaywrightError
 
 from app.api.routes import router
 from app.core.config import settings
@@ -27,6 +28,17 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.exception_handler(PlaywrightError)
+async def playwright_error_handler(_request: Request, _exc: PlaywrightError) -> JSONResponse:
+    """返回脱敏错误，避免 Playwright 调用日志中的请求 Cookie 出现在控制台。"""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Steam 连接或页面加载异常，请检查 VPN/加速器、重新登录后再试"
+        },
+    )
 
 
 @app.get("/", include_in_schema=False)

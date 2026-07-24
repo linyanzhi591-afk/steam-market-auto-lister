@@ -32,7 +32,7 @@ function money(minor) {
 function toast(message) {
   $("#toast").textContent = message;
   $("#toast").hidden = false;
-  setTimeout(() => { $("#toast").hidden = true; }, 5000);
+  setTimeout(() => { $("#toast").hidden = true; }, 15000);
 }
 
 function renderSession(session) {
@@ -86,8 +86,17 @@ async function load() {
 }
 
 async function busy(button, action) {
+  const originalText = button.textContent;
   button.disabled = true;
-  try { await action(); } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  button.textContent = "处理中，请稍候…";
+  try {
+    await action();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 }
 
 $("#login").addEventListener("click", () => busy($("#login"), async () => {
@@ -99,12 +108,23 @@ $("#logout").addEventListener("click", () => busy($("#logout"), async () => {
   renderSession((await post("/api/session/logout")).status);
 }));
 $("#sync-inventory").addEventListener("click", () => busy($("#sync-inventory"), async () => {
-  const result = await post("/api/sync/inventory");
-  if (result.errors.length) {
-    throw new Error(`库存同步未完成：${result.errors.join("；")}`);
+  const status = $("#sync-status");
+  status.className = "sync-status";
+  status.textContent = "正在连接 Steam 并逐页读取库存，请保持 VPN/加速器连接…";
+  try {
+    const result = await post("/api/sync/inventory");
+    if (result.errors.length) {
+      throw new Error(`库存同步未完成：${result.errors.join("；")}`);
+    }
+    status.className = "sync-status success";
+    status.textContent = `同步完成：${result.inventory_count} 件库存，${result.marketable_count} 件可出售`;
+    toast(status.textContent);
+    await load();
+  } catch (error) {
+    status.className = "sync-status error";
+    status.textContent = error.message;
+    throw error;
   }
-  toast(`已同步 ${result.inventory_count} 件库存，其中 ${result.marketable_count} 件可出售`);
-  await load();
 }));
 $("#sync-prices").addEventListener("click", () => busy($("#sync-prices"), async () => {
   const result = await post(`/api/sync/prices?currency=${$("#currency").value}`);

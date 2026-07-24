@@ -4,6 +4,7 @@ from typing import Any
 
 from playwright.async_api import APIResponse
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from app.core.config import settings
 from app.core.database import Database, database
@@ -113,19 +114,41 @@ class SteamMarketService:
             wait_until="domcontentloaded",
             timeout=45_000,
         )
+        try:
+            await page.wait_for_function(
+                "() => Object.keys(window.g_rgAppContextData || {}).length > 0",
+                timeout=15_000,
+            )
+        except PlaywrightTimeoutError:
+            pass
         contexts = await page.evaluate(
             """
             () => {
               const apps = window.g_rgAppContextData || {};
-              return Object.values(apps).flatMap(app =>
+              const fromGlobal = Object.entries(apps).flatMap(([appidKey, app]) =>
                 Object.keys(app.rgContexts || {}).map(contextid => [
-                  Number(app.appid), String(contextid)
+                  Number(app.appid || appidKey), String(contextid)
                 ])
+              );
+              const fromDom = Array.from(document.querySelectorAll('[data-appid]'))
+                .flatMap(node => {
+                  const appid = Number(node.dataset.appid);
+                  const contextid = node.dataset.contextid || node.getAttribute('data-context-id');
+                  return appid && contextid ? [[appid, String(contextid)]] : [];
+                });
+              return Array.from(
+                new Map([...fromGlobal, ...fromDom].map(pair => [pair.join('_'), pair])).values()
               );
             }
             """
         )
-        return [(int(appid), str(contextid)) for appid, contextid in contexts]
+        result = [(int(appid), str(contextid)) for appid, contextid in contexts]
+        if not result:
+            raise RuntimeError(
+                "Steam 库存页面未返回任何游戏上下文；请确认库存不是完全私密，"
+                "刷新 Steam 登录后重试"
+            )
+        return result
 
     async def scan_inventory(self) -> SyncResult:
         status = self.session.status()

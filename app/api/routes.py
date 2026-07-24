@@ -77,7 +77,12 @@ def inventory(marketable_only: bool = True) -> list[dict[str, object]]:
 async def sync_inventory() -> SyncResult:
     try:
         return await steam_market_service.scan_inventory()
-    except (OSError, PlaywrightError, RuntimeError) as exc:
+    except PlaywrightError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Steam 库存同步失败：Steam 连接或页面加载异常，请检查 VPN/加速器后重试",
+        ) from exc
+    except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=f"Steam 库存同步失败：{exc}") from exc
 
 
@@ -85,7 +90,12 @@ async def sync_inventory() -> SyncResult:
 async def sync_prices(currency: Currency = Currency.CNY) -> SyncResult:
     try:
         return await steam_market_service.sync_all_prices(currency)
-    except (OSError, PlaywrightError, RuntimeError) as exc:
+    except PlaywrightError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Steam 行情同步失败：Steam 连接异常，请检查 VPN/加速器后重试",
+        ) from exc
+    except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=f"Steam 行情同步失败：{exc}") from exc
 
 
