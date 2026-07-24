@@ -22,6 +22,10 @@ h2 { margin: 4px 0 0; }
 .card strong { font-size: 28px; }
 .panel { margin-top: 18px; padding: 24px; }
 select { background: #111a17; border: 1px solid #2b4139; color: white; padding: 10px 12px; border-radius: 10px; }
+button { border: 0; border-radius: 9px; padding: 9px 12px; color: #07110d; background: #66e0b7; cursor: pointer; font-weight: 700; }
+button.secondary { color: #b9c8c2; background: #24312c; }
+button:disabled { opacity: .5; cursor: wait; }
+.actions { display: flex; gap: 8px; }
 .strategy-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 20px; }
 .strategy { padding: 16px; border: 1px solid #263730; border-radius: 12px; background: #0d1311; }
 .strategy strong { display: block; margin-bottom: 6px; }
@@ -33,4 +37,3 @@ select { background: #111a17; border: 1px solid #2b4139; color: white; padding: 
   .grid, .strategy-list { grid-template-columns: 1fr; }
   header, .panel-title { align-items: stretch; flex-direction: column; }
 }
-

@@ -9,6 +9,7 @@ from app.core.models import (
     PriceDecision,
     PricePoint,
     PricingStrategy,
+    SessionActionResult,
     SessionStatus,
 )
 from app.services.pricing import calculate_price
@@ -25,6 +26,18 @@ def health() -> dict[str, str]:
 @router.get("/session", response_model=SessionStatus)
 def session_status() -> SessionStatus:
     return steam_session_service.status()
+
+
+@router.post("/session/login", response_model=SessionActionResult)
+async def session_login() -> SessionActionResult:
+    status = await steam_session_service.login()
+    return SessionActionResult(success=status.state.value == "logged_in", status=status)
+
+
+@router.post("/session/logout", response_model=SessionActionResult)
+async def session_logout() -> SessionActionResult:
+    status = await steam_session_service.logout()
+    return SessionActionResult(success=status.state.value == "logged_out", status=status)
 
 
 @router.get("/dashboard", response_model=DashboardSummary)
@@ -54,4 +67,3 @@ def demo_price(strategy: PricingStrategy) -> PriceDecision:
         return calculate_price(strategy, points)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-

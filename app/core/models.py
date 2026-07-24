@@ -11,6 +11,7 @@ class Currency(StrEnum):
 
 class SessionState(StrEnum):
     LOGGED_OUT = "logged_out"
+    LOGGING_IN = "logging_in"
     LOGIN_REQUIRED = "login_required"
     LOGGED_IN = "logged_in"
     EXPIRED = "expired"
@@ -53,6 +54,11 @@ class SessionStatus(BaseModel):
     message: str
 
 
+class SessionActionResult(BaseModel):
+    success: bool
+    status: SessionStatus
+
+
 class DashboardSummary(BaseModel):
     currency: Currency
     dry_run: bool
@@ -61,4 +67,3 @@ class DashboardSummary(BaseModel):
     pending_confirmation: int = 0
     active: int = 0
     sold: int = 0
-
