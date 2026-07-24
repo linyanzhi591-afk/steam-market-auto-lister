@@ -1,26 +1,39 @@
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.core.config import settings
+from app.core.database import database
 from app.core.models import (
     Currency,
     DashboardSummary,
+    ListingExecuteRequest,
+    ListingPlanRequest,
+    ListingRecord,
+    ListingState,
     PriceDecision,
     PricePoint,
     PricingStrategy,
     SessionActionResult,
     SessionStatus,
+    SyncResult,
 )
+from app.services.listing_manager import listing_manager
 from app.services.pricing import calculate_price
+from app.services.steam_market import steam_market_service
 from app.services.steam_session import steam_session_service
 
 router = APIRouter(prefix="/api")
 
 
 @router.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "dry_run": settings.dry_run,
+        "market_writes": settings.allow_market_writes,
+    }
 
 
 @router.get("/session", response_model=SessionStatus)
@@ -42,7 +55,81 @@ async def session_logout() -> SessionActionResult:
 
 @router.get("/dashboard", response_model=DashboardSummary)
 def dashboard(currency: Currency = Currency.CNY) -> DashboardSummary:
-    return DashboardSummary(currency=currency, dry_run=settings.dry_run)
+    counts = database.counts()
+    return DashboardSummary(
+        currency=currency,
+        dry_run=settings.dry_run or not settings.allow_market_writes,
+        sellable_items=counts["sellable_items"],
+        planned=counts["planned"],
+        pending_confirmation=counts["pending_confirmation"],
+        active=counts["active"],
+        sold=counts["sold"],
+    )
+
+
+@router.get("/inventory")
+def inventory(marketable_only: bool = True) -> list[dict[str, object]]:
+    return database.inventory(marketable_only=marketable_only)
+
+
+@router.post("/sync/inventory", response_model=SyncResult)
+async def sync_inventory() -> SyncResult:
+    try:
+        return await steam_market_service.scan_inventory()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sync/prices", response_model=SyncResult)
+async def sync_prices(currency: Currency = Currency.CNY) -> SyncResult:
+    try:
+        return await steam_market_service.sync_all_prices(currency)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sync/listings", response_model=SyncResult)
+async def sync_listings() -> SyncResult:
+    try:
+        return await listing_manager.sync_states()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/listings", response_model=list[ListingRecord])
+def listings(
+    state: Annotated[list[ListingState] | None, Query()] = None,
+) -> list[ListingRecord]:
+    return database.listings(state)
+
+
+@router.post("/listings/plan", response_model=list[ListingRecord])
+async def create_listing_plans(request: ListingPlanRequest) -> list[ListingRecord]:
+    return await listing_manager.create_plans(
+        request.strategy,
+        request.currency,
+        assetids=request.assetids,
+        minimum_receive_minor=request.minimum_receive_minor,
+        maximum_buyer_price_minor=request.maximum_buyer_price_minor,
+        maximum_items=request.maximum_items,
+        excluded_names=request.excluded_names,
+    )
+
+
+@router.post("/listings/execute", response_model=list[ListingRecord])
+async def execute_listing_plans(request: ListingExecuteRequest) -> list[ListingRecord]:
+    try:
+        return await listing_manager.execute(request.listing_ids, request.confirmation_text)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/listings/process-expired")
+async def process_expired(currency: Currency = Currency.CNY) -> dict[str, int]:
+    try:
+        return {"processed": await listing_manager.process_expired(currency)}
+    except (PermissionError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/strategies")

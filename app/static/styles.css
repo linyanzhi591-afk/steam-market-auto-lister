@@ -24,11 +24,22 @@ h2 { margin: 4px 0 0; }
 select { background: #111a17; border: 1px solid #2b4139; color: white; padding: 10px 12px; border-radius: 10px; }
 button { border: 0; border-radius: 9px; padding: 9px 12px; color: #07110d; background: #66e0b7; cursor: pointer; font-weight: 700; }
 button.secondary { color: #b9c8c2; background: #24312c; }
+button.danger { color: #ffe6e4; background: #7a2621; }
 button:disabled { opacity: .5; cursor: wait; }
 .actions { display: flex; gap: 8px; }
 .strategy-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 20px; }
 .strategy { padding: 16px; border: 1px solid #263730; border-radius: 12px; background: #0d1311; }
 .strategy strong { display: block; margin-bottom: 6px; }
+.plan-bar { display: flex; gap: 12px; align-items: center; margin: 20px 0 12px; flex-wrap: wrap; }
+label { color: #92a09b; }
+input { width: 100px; margin-left: 6px; background: #111a17; border: 1px solid #2b4139; color: white; padding: 9px; border-radius: 9px; }
+input.wide-input { width: 260px; }
+.table-wrap { overflow-x: auto; margin-top: 18px; }
+table { width: 100%; border-collapse: collapse; min-width: 650px; }
+th, td { padding: 13px 10px; border-bottom: 1px solid #22302b; text-align: left; }
+th { color: #809088; font-size: 12px; text-transform: uppercase; }
+td { color: #cfdbd6; }
+.toast { position: fixed; right: 24px; bottom: 24px; max-width: 420px; padding: 14px 18px; border-radius: 12px; background: #173f37; box-shadow: 0 14px 50px #0008; }
 @media (max-width: 760px) {
   .grid, .strategy-list { grid-template-columns: 1fr 1fr; }
   header { align-items: flex-start; }

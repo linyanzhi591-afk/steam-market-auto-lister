@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -42,6 +43,19 @@ class SteamSessionService:
 
     def status(self) -> SessionStatus:
         return self._status.model_copy()
+
+    @asynccontextmanager
+    async def browser_context(self, *, headless: bool = True):
+        """为库存、行情和市场服务提供共享登录会话，防止配置目录并发占用。"""
+        async with self._lock:
+            if self._status.state is not SessionState.LOGGED_IN:
+                raise RuntimeError("Steam 尚未登录")
+            playwright, context = await self._open_context(headless=headless)
+            try:
+                yield context
+            finally:
+                await context.close()
+                await playwright.stop()
 
     async def _open_context(self, *, headless: bool) -> tuple[object, BrowserContext]:
         self.profile_dir.mkdir(parents=True, exist_ok=True)

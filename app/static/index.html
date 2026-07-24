@@ -18,8 +18,8 @@
       </header>
 
       <section class="notice">
-        <strong>当前是项目骨架。</strong>
-        Steam 登录、库存读取和真实上架尚未接入，系统不会对你的账号执行操作。
+        <strong id="mode-label">演练模式。</strong>
+        默认禁止真实市场写入；启用真实操作需要同时修改两个环境变量并输入确认文本。
       </section>
 
       <section class="grid">
@@ -50,6 +50,58 @@
         </div>
         <div id="strategies" class="strategy-list"></div>
       </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">INVENTORY</p>
+            <h2>可出售库存</h2>
+          </div>
+          <div class="actions">
+            <button id="sync-inventory" type="button">同步库存</button>
+            <button id="sync-prices" class="secondary" type="button">同步30天价格</button>
+          </div>
+        </div>
+        <div class="plan-bar">
+          <select id="plan-strategy">
+            <option value="robust_median">稳健中位价</option>
+            <option value="trend">趋势价</option>
+            <option value="market_follow">市场跟随价</option>
+            <option value="fast_sell">快速出售价</option>
+          </select>
+          <label>最低到账 <input id="minimum-price" type="number" min="0.01" step="0.01" value="0.01" /></label>
+          <label>单件支付上限 <input id="maximum-price" type="number" min="0.03" step="0.01" value="1000" /></label>
+          <label>批次上限 <input id="maximum-items" type="number" min="1" max="5000" value="2000" /></label>
+          <label>排除名称 <input id="excluded-names" class="wide-input" placeholder="用逗号分隔完整市场名称" /></label>
+          <button id="create-plans" type="button">为全部库存生成计划</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>游戏</th><th>物品</th><th>数量</th><th>可交易</th></tr></thead>
+            <tbody id="inventory-body"><tr><td colspan="4">尚未同步库存</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">LISTINGS</p>
+            <h2>上架任务</h2>
+          </div>
+          <div class="actions">
+            <button id="sync-listings" class="secondary" type="button">同步挂单状态</button>
+            <button id="execute-plans" class="danger" type="button">执行所有待提交计划</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>卖家到账</th><th>买家支付</th></tr></thead>
+            <tbody id="listings-body"><tr><td colspan="5">暂无任务</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <p id="toast" class="toast" hidden></p>
     </main>
     <script src="/static/app.js"></script>
   </body>
