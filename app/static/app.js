@@ -43,10 +43,30 @@ function renderSession(session) {
 }
 
 function renderInventory(items) {
-  $("#inventory-body").innerHTML = items.length
-    ? items.map((item) => `<tr>
+  const grouped = Array.from(items.reduce((groups, item) => {
+    const key = `${item.appid}\u0000${item.market_hash_name}`;
+    const current = groups.get(key);
+    if (current) {
+      current.amount += Number(item.amount);
+      current.assetCount += 1;
+      current.tradable = current.tradable && Boolean(item.tradable);
+    } else {
+      groups.set(key, {
+        appid: item.appid,
+        market_hash_name: item.market_hash_name,
+        amount: Number(item.amount),
+        assetCount: 1,
+        tradable: Boolean(item.tradable),
+      });
+    }
+    return groups;
+  }, new Map()).values());
+
+  $("#inventory-body").innerHTML = grouped.length
+    ? grouped.map((item) => `<tr>
         <td>${item.appid}</td><td>${item.market_hash_name}</td>
-        <td>${item.amount}</td><td>${item.tradable ? "是" : "否"}</td>
+        <td>${item.amount}${item.assetCount > 1 ? `（${item.assetCount} 个独立资产）` : ""}</td>
+        <td>${item.tradable ? "是" : "否"}</td>
       </tr>`).join("")
     : '<tr><td colspan="4">没有已同步的可出售库存</td></tr>';
 }
