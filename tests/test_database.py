@@ -1,7 +1,16 @@
 from pathlib import Path
 
 from app.core.database import Database
-from app.core.models import AppSettings, Currency, InventoryAsset, ListingState, PricingStrategy
+from app.core.models import (
+    AppSettings,
+    Currency,
+    InventoryAsset,
+    ListingState,
+    PricingStrategy,
+    StageAction,
+    StrategyProfileInput,
+    StrategyStage,
+)
 
 
 def make_database(path: Path) -> Database:
@@ -128,3 +137,47 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
     assert database.settings().currency is Currency.INR
     assert database.settings().trend_hours == 96
     assert database.blacklist()[0]["market_hash_name"] == "Blocked"
+
+
+def test_strategy_profiles_can_be_created_and_made_default(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    original = database.strategy_profile()
+    created = database.save_strategy_profile(
+        StrategyProfileInput(
+            name="快速测试",
+            is_default=True,
+            stages=[
+                StrategyStage(
+                    name="快速阶段",
+                    pricing_source=PricingStrategy.FAST_SELL,
+                    adjustment_percent=-2,
+                    duration_hours=6,
+                    action_after_timeout=StageAction.PAUSE,
+                )
+            ],
+        )
+    )
+    assert database.strategy_profile().id == created.id
+    assert database.strategy_profile().stages[0].duration_hours == 6
+    assert database.strategy_profile(original.id).is_default is False
+
+
+def test_external_active_listing_is_imported(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    imported = database.import_active_listings(
+        [
+            {
+                "listing_id": "9001",
+                "assetid": "100",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Test Item",
+                "display_price": "₹ 115.00",
+            }
+        ]
+    )
+    assert imported == 1
+    listing = database.listings()[0]
+    assert listing.state is ListingState.ACTIVE
+    assert listing.steam_listing_id == "9001"
+    assert listing.strategy_profile_id == database.strategy_profile().id

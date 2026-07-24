@@ -36,6 +36,17 @@ button:disabled { opacity: .5; cursor: wait; }
 .settings-form { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 16px; margin-top: 22px; }
 .settings-form label { display: grid; gap: 7px; }
 .settings-form input { width: 100%; margin: 0; }
+.inline-check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
+.inline-check input { width: auto; }
+.stage-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; }
+.stage-heading h3 { margin: 4px 0; }
+.stage-list { display: grid; gap: 14px; margin-top: 12px; }
+.stage-card { border: 1px solid #2b4139; background: #0b1210; border-radius: 14px; padding: 16px; }
+.stage-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.stage-fields { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }
+.stage-fields label { display: grid; gap: 6px; }
+.stage-fields input, .stage-fields select { width: 100%; margin: 0; }
+.settings-footer { margin-top: 18px; }
 .sync-status { margin: 8px 0 0; color: #92a09b; }
 .sync-status.error { color: #ff9b91; }
 .sync-status.success { color: #66e0b7; }

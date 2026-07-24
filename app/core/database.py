@@ -1,8 +1,9 @@
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import settings
@@ -13,6 +14,10 @@ from app.core.models import (
     ListingRecord,
     ListingState,
     PricingStrategy,
+    StageAction,
+    StrategyProfile,
+    StrategyProfileInput,
+    StrategyStage,
 )
 
 
@@ -76,6 +81,7 @@ class Database:
                     market_hash_name TEXT NOT NULL,
                     state TEXT NOT NULL,
                     strategy TEXT NOT NULL,
+                    strategy_profile_id INTEGER,
                     stage INTEGER NOT NULL DEFAULT 0,
                     seller_price_minor INTEGER NOT NULL,
                     buyer_price_minor INTEGER NOT NULL,
@@ -109,6 +115,15 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS strategy_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    stages_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             defaults = {
@@ -129,6 +144,50 @@ class Database:
             if "minimum_receive_minor" not in columns:
                 db.execute(
                     "ALTER TABLE listings ADD COLUMN minimum_receive_minor INTEGER NOT NULL DEFAULT 1"
+                )
+            if "strategy_profile_id" not in columns:
+                db.execute("ALTER TABLE listings ADD COLUMN strategy_profile_id INTEGER")
+            profile_count = db.execute("SELECT COUNT(*) FROM strategy_profiles").fetchone()[0]
+            if profile_count == 0:
+                now = utc_now()
+                default_stages = [
+                    StrategyStage(
+                        name="趋势试探",
+                        pricing_source=PricingStrategy.TREND,
+                        duration_hours=72,
+                    ),
+                    StrategyStage(
+                        name="稳健出售",
+                        pricing_source=PricingStrategy.ROBUST_MEDIAN,
+                        duration_hours=48,
+                    ),
+                    StrategyStage(
+                        name="跟随市场",
+                        pricing_source=PricingStrategy.MARKET_FOLLOW,
+                        duration_hours=24,
+                    ),
+                    StrategyStage(
+                        name="快速出售",
+                        pricing_source=PricingStrategy.FAST_SELL,
+                        duration_hours=24,
+                        action_after_timeout=StageAction.PAUSE,
+                    ),
+                ]
+                db.execute(
+                    """
+                    INSERT INTO strategy_profiles(
+                        name, is_default, stages_json, created_at, updated_at
+                    ) VALUES (?, 1, ?, ?, ?)
+                    """,
+                    (
+                        "默认阶梯策略",
+                        json.dumps(
+                            [stage.model_dump(mode="json") for stage in default_stages],
+                            ensure_ascii=False,
+                        ),
+                        now,
+                        now,
+                    ),
                 )
 
     def clear_runtime_cache(self) -> None:
@@ -243,6 +302,87 @@ class Database:
     def save_currency(self, currency: Currency) -> None:
         self.save_settings(self.settings().model_copy(update={"currency": currency}))
 
+    def strategy_profiles(self) -> list[StrategyProfile]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM strategy_profiles ORDER BY is_default DESC, id"
+            ).fetchall()
+        return [
+            StrategyProfile(
+                id=row["id"],
+                name=row["name"],
+                is_default=bool(row["is_default"]),
+                stages=[
+                    StrategyStage.model_validate(stage)
+                    for stage in json.loads(row["stages_json"])
+                ],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def strategy_profile(self, profile_id: int | None = None) -> StrategyProfile:
+        profiles = self.strategy_profiles()
+        if profile_id is not None:
+            match = next((profile for profile in profiles if profile.id == profile_id), None)
+            if match:
+                return match
+            raise ValueError("指定策略不存在")
+        default = next((profile for profile in profiles if profile.is_default), None)
+        if default:
+            return default
+        if profiles:
+            return profiles[0]
+        raise ValueError("系统中没有可用策略")
+
+    def save_strategy_profile(
+        self,
+        profile: StrategyProfileInput,
+        profile_id: int | None = None,
+    ) -> StrategyProfile:
+        now = utc_now()
+        stages_json = json.dumps(
+            [stage.model_dump(mode="json") for stage in profile.stages],
+            ensure_ascii=False,
+        )
+        with self.connect() as db:
+            if profile.is_default:
+                db.execute("UPDATE strategy_profiles SET is_default = 0")
+            if profile_id is None:
+                cursor = db.execute(
+                    """
+                    INSERT INTO strategy_profiles(
+                        name, is_default, stages_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (profile.name, profile.is_default, stages_json, now, now),
+                )
+                profile_id = int(cursor.lastrowid)
+            else:
+                cursor = db.execute(
+                    """
+                    UPDATE strategy_profiles
+                    SET name = ?, is_default = ?, stages_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (profile.name, profile.is_default, stages_json, now, profile_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError("指定策略不存在")
+        return self.strategy_profile(profile_id)
+
+    def delete_strategy_profile(self, profile_id: int) -> None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT is_default FROM strategy_profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError("指定策略不存在")
+            if row["is_default"]:
+                raise ValueError("默认策略不能删除，请先将其他策略设为默认")
+            db.execute("DELETE FROM strategy_profiles WHERE id = ?", (profile_id,))
+
     def add_blacklist(self, appid: int, market_hash_name: str) -> None:
         now = utc_now()
         with self.connect() as db:
@@ -311,6 +451,7 @@ class Database:
         seller_price_minor: int,
         buyer_price_minor: int,
         minimum_receive_minor: int = 1,
+        strategy_profile_id: int | None = None,
     ) -> int:
         now = utc_now()
         with self.connect() as db:
@@ -318,9 +459,10 @@ class Database:
                 """
                 INSERT INTO listings (
                     assetid, appid, contextid, market_hash_name, state, strategy,
-                    stage, seller_price_minor, buyer_price_minor, minimum_receive_minor,
+                    strategy_profile_id, stage, seller_price_minor, buyer_price_minor,
+                    minimum_receive_minor,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset["assetid"],
@@ -329,6 +471,7 @@ class Database:
                     asset["market_hash_name"],
                     ListingState.PLANNED,
                     strategy,
+                    strategy_profile_id,
                     seller_price_minor,
                     buyer_price_minor,
                     minimum_receive_minor,
@@ -337,6 +480,84 @@ class Database:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def import_active_listings(self, remote: list[dict[str, object]]) -> int:
+        """将 Steam 中已有、但本地尚未记录的在售挂单导入任务表。"""
+        profile = self.strategy_profile()
+        first_stage = profile.stages[0]
+        now = datetime.now(UTC)
+        next_action = now + timedelta(hours=first_stage.duration_hours)
+        imported = 0
+        with self.connect() as db:
+            for item in remote:
+                steam_listing_id = str(item.get("listing_id", ""))
+                if not steam_listing_id:
+                    continue
+                existing = db.execute(
+                    "SELECT id FROM listings WHERE steam_listing_id = ?",
+                    (steam_listing_id,),
+                ).fetchone()
+                if existing:
+                    db.execute(
+                        "UPDATE listings SET state = ?, updated_at = ? WHERE id = ?",
+                        (ListingState.ACTIVE.value, utc_now(), existing["id"]),
+                    )
+                    continue
+                assetid = str(item.get("assetid") or f"external:{steam_listing_id}")
+                appid = int(item.get("appid") or 0)
+                contextid = str(item.get("contextid") or "0")
+                market_hash_name = str(item.get("market_hash_name") or "未知在售物品")
+                number_match = re.search(
+                    r"\d[\d,.]*", str(item.get("display_price") or "")
+                )
+                buyer_price = 0
+                if number_match:
+                    numeric = number_match.group(0)
+                    if "," in numeric and "." not in numeric:
+                        numeric = numeric.replace(",", ".")
+                    else:
+                        numeric = numeric.replace(",", "")
+                    try:
+                        buyer_price = round(float(numeric) * 100)
+                    except ValueError:
+                        buyer_price = 0
+                seller_price = max(1, buyer_price)
+                if buyer_price >= 3:
+                    from app.services.pricing import seller_receive_for_buyer_pay
+
+                    seller_price = seller_receive_for_buyer_pay(buyer_price)
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO listings(
+                            assetid, appid, contextid, market_hash_name, state,
+                            strategy, strategy_profile_id, stage,
+                            seller_price_minor, buyer_price_minor,
+                            minimum_receive_minor, steam_listing_id,
+                            active_since, next_action_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            assetid,
+                            appid,
+                            contextid,
+                            market_hash_name,
+                            ListingState.ACTIVE.value,
+                            first_stage.pricing_source.value,
+                            profile.id,
+                            seller_price,
+                            max(buyer_price, seller_price),
+                            steam_listing_id,
+                            now.isoformat(),
+                            next_action.isoformat(),
+                            now.isoformat(),
+                            now.isoformat(),
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                imported += 1
+        return imported
 
     def listings(self, states: list[ListingState] | None = None) -> list[ListingRecord]:
         params: list[str] = []
@@ -358,6 +579,7 @@ class Database:
         allowed = {
             "state",
             "strategy",
+            "strategy_profile_id",
             "stage",
             "seller_price_minor",
             "buyer_price_minor",

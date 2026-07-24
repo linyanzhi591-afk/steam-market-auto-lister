@@ -53,21 +53,24 @@
             <option value="INR">印度卢比 INR</option>
           </select>
         </div>
-        <div id="strategies" class="strategy-list"></div>
         <div class="settings-form">
-          <label>默认策略
-            <select id="default-strategy">
-              <option value="robust_median">稳健中位价</option>
-              <option value="trend">趋势价</option>
-              <option value="market_follow">市场跟随价</option>
-              <option value="fast_sell">快速出售价</option>
-            </select>
-          </label>
-          <label>趋势价阶段（小时）<input id="trend-hours" type="number" min="1" max="720" /></label>
-          <label>稳健中位价阶段（小时）<input id="robust-hours" type="number" min="1" max="720" /></label>
-          <label>市场跟随价阶段（小时）<input id="follow-hours" type="number" min="1" max="720" /></label>
-          <label>快速出售价阶段（小时）<input id="fast-hours" type="number" min="1" max="720" /></label>
-          <button id="save-settings" type="button">保存设置</button>
+          <label>当前策略<select id="strategy-profile-select"></select></label>
+          <label>策略名称<input id="strategy-profile-name" maxlength="100" /></label>
+          <label class="inline-check"><input id="strategy-is-default" type="checkbox" />设为默认策略</label>
+          <div class="actions">
+            <button id="new-strategy" class="secondary" type="button">新建</button>
+            <button id="duplicate-strategy" class="secondary" type="button">复制</button>
+            <button id="delete-strategy" class="danger" type="button">删除</button>
+            <button id="save-strategy" type="button">保存策略</button>
+          </div>
+        </div>
+        <div class="stage-heading">
+          <div><p class="eyebrow">STAGES</p><h3>阶段编排</h3></div>
+          <button id="add-stage" type="button">添加阶段</button>
+        </div>
+        <div id="strategy-stages" class="stage-list"></div>
+        <div class="actions settings-footer">
+          <button id="save-settings" type="button">保存币种设置</button>
         </div>
       </section>
 
@@ -83,12 +86,7 @@
           </div>
         </div>
         <div class="plan-bar">
-          <select id="plan-strategy">
-            <option value="robust_median">稳健中位价</option>
-            <option value="trend">趋势价</option>
-            <option value="market_follow">市场跟随价</option>
-            <option value="fast_sell">快速出售价</option>
-          </select>
+          <select id="plan-strategy"></select>
           <label>最低到账 <input id="minimum-price" type="number" min="0.01" step="0.01" value="0.01" /></label>
           <label>单件支付上限 <input id="maximum-price" type="number" min="0.03" step="0.01" value="1000" /></label>
           <label>批次上限 <input id="maximum-items" type="number" min="1" max="5000" value="2000" /></label>

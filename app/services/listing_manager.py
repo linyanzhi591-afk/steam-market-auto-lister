@@ -9,18 +9,17 @@ from app.core.models import (
     ListingState,
     PricePoint,
     PricingStrategy,
+    StageAction,
+    StrategyStage,
     SyncResult,
 )
-from app.services.pricing import calculate_price
+from app.services.pricing import (
+    buyer_pays_for_seller_receive,
+    calculate_price,
+)
 from app.services.steam_market import SteamMarketService, steam_market_service
 
 EXECUTE_CONFIRMATION = "我确认执行真实市场操作"
-STRATEGY_LADDER: list[tuple[PricingStrategy, timedelta]] = [
-    (PricingStrategy.TREND, timedelta(hours=72)),
-    (PricingStrategy.ROBUST_MEDIAN, timedelta(hours=48)),
-    (PricingStrategy.MARKET_FOLLOW, timedelta(hours=24)),
-    (PricingStrategy.FAST_SELL, timedelta(hours=24)),
-]
 
 
 def _as_points(rows: list[sqlite3.Row]) -> list[PricePoint]:
@@ -43,37 +42,62 @@ class ListingManager:
         self.store = store or database
         self.market = market or steam_market_service
 
-    def strategy_ladder(self) -> list[tuple[PricingStrategy, timedelta]]:
-        if not hasattr(self.store, "settings"):
-            return STRATEGY_LADDER
-        app_settings = self.store.settings()
-        return [
-            (PricingStrategy.TREND, timedelta(hours=app_settings.trend_hours)),
-            (
-                PricingStrategy.ROBUST_MEDIAN,
-                timedelta(hours=app_settings.robust_median_hours),
-            ),
-            (
-                PricingStrategy.MARKET_FOLLOW,
-                timedelta(hours=app_settings.market_follow_hours),
-            ),
-            (
-                PricingStrategy.FAST_SELL,
-                timedelta(hours=app_settings.fast_sell_hours),
-            ),
+    def stages(
+        self,
+        strategy_profile_id: int | None,
+        fallback_strategy: PricingStrategy = PricingStrategy.ROBUST_MEDIAN,
+    ) -> tuple[int | None, list[StrategyStage]]:
+        if hasattr(self.store, "strategy_profile"):
+            profile = self.store.strategy_profile(strategy_profile_id)
+            return profile.id, profile.stages
+        return None, [
+            StrategyStage(
+                name="兼容策略",
+                pricing_source=fallback_strategy,
+                duration_hours=24,
+                action_after_timeout=StageAction.PAUSE,
+            )
         ]
+
+    def stage_price(
+        self,
+        stage: StrategyStage,
+        points: list[PricePoint],
+        *,
+        minimum_receive_minor: int,
+    ) -> tuple[int, int]:
+        decision = calculate_price(stage.pricing_source, points)
+        median_decision = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
+        adjusted = round(
+            decision.seller_receives_minor * (1 + stage.adjustment_percent / 100)
+        )
+        adjusted += stage.adjustment_fixed_minor
+        median_floor = round(
+            median_decision.seller_receives_minor * stage.median_floor_percent / 100
+        )
+        seller_price = max(
+            1,
+            adjusted,
+            minimum_receive_minor,
+            stage.absolute_floor_minor,
+            median_floor,
+        )
+        return seller_price, buyer_pays_for_seller_receive(seller_price)
 
     async def create_plans(
         self,
         strategy: PricingStrategy,
         currency: Currency,
         *,
+        strategy_profile_id: int | None = None,
         assetids: list[str] | None = None,
         minimum_receive_minor: int = 1,
         maximum_buyer_price_minor: int | None = None,
         maximum_items: int | None = None,
         excluded_names: list[str] | None = None,
     ) -> list[ListingRecord]:
+        profile_id, stages = self.stages(strategy_profile_id, strategy)
+        first_stage = stages[0]
         excluded = {name.casefold() for name in (excluded_names or [])}
         selected = [
             asset
@@ -93,23 +117,22 @@ class ListingManager:
             if not points:
                 missing_prices.add(str(asset["market_hash_name"]))
                 continue
-            decision = calculate_price(strategy, points)
-            seller_price = max(minimum_receive_minor, decision.seller_receives_minor)
-            buyer_price = decision.buyer_pays_minor
-            if seller_price != decision.seller_receives_minor:
-                from app.services.pricing import buyer_pays_for_seller_receive
-
-                buyer_price = buyer_pays_for_seller_receive(seller_price)
+            seller_price, buyer_price = self.stage_price(
+                first_stage,
+                points,
+                minimum_receive_minor=minimum_receive_minor,
+            )
             maximum = maximum_buyer_price_minor or settings.max_unit_buyer_price_minor
             if buyer_price > maximum:
                 continue
             try:
                 listing_id = self.store.create_listing(
                     asset,
-                    strategy,
+                    first_stage.pricing_source,
                     seller_price,
                     buyer_price,
                     minimum_receive_minor,
+                    profile_id,
                 )
             except sqlite3.IntegrityError:
                 continue
@@ -118,7 +141,8 @@ class ListingManager:
                 "listing.plan",
                 str(asset["assetid"]),
                 {
-                    "strategy": strategy.value,
+                    "strategy_profile_id": profile_id,
+                    "stage": first_stage.model_dump(mode="json"),
                     "seller_price_minor": seller_price,
                     "buyer_price_minor": buyer_price,
                 },
@@ -170,15 +194,18 @@ class ListingManager:
     async def sync_states(self) -> SyncResult:
         remote = await self.market.active_listings()
         recent_sales = await self.market.recent_sales()
+        imported = self.store.import_active_listings(remote)
         by_id = {str(item["listing_id"]): item for item in remote}
         unmatched = list(remote)
-        updated = 0
+        updated = imported
         open_records = self.store.listings(
             [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
         )
         now = datetime.now(UTC)
-        ladder = self.strategy_ladder()
         for record in open_records:
+            _profile_id, stages = self.stages(
+                record.strategy_profile_id, record.strategy
+            )
             match = by_id.get(record.steam_listing_id or "")
             if match is None and record.state is ListingState.PENDING_CONFIRMATION:
                 match = next(
@@ -190,7 +217,8 @@ class ListingManager:
                     None,
                 )
             if match and record.state is ListingState.PENDING_CONFIRMATION:
-                next_action = now + ladder[min(record.stage, len(ladder) - 1)][1]
+                stage = stages[min(record.stage, len(stages) - 1)]
+                next_action = now + timedelta(hours=stage.duration_hours)
                 self.store.update_listing(
                     record.id,
                     state=ListingState.ACTIVE,
@@ -198,7 +226,8 @@ class ListingManager:
                     active_since=now.isoformat(),
                     next_action_at=next_action.isoformat(),
                 )
-                unmatched.remove(match)
+                if match in unmatched:
+                    unmatched.remove(match)
                 updated += 1
             elif not match and record.state is ListingState.ACTIVE:
                 state = (
@@ -212,7 +241,6 @@ class ListingManager:
 
     async def process_expired(self, currency: Currency) -> int:
         now = datetime.now(UTC)
-        ladder = self.strategy_ladder()
         processed = 0
         resubmit_ids: list[int] = []
         for record in self.store.listings([ListingState.ACTIVE]):
@@ -221,28 +249,34 @@ class ListingManager:
             if not record.steam_listing_id:
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
                 continue
-            if record.stage + 1 >= len(ladder):
+            profile_id, stages = self.stages(record.strategy_profile_id, record.strategy)
+            current_stage = stages[min(record.stage, len(stages) - 1)]
+            if (
+                current_stage.action_after_timeout is StageAction.PAUSE
+                or record.stage + 1 >= len(stages)
+            ):
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
                 continue
             await self.market.cancel_listing(record.steam_listing_id)
             await self.market.update_price_history(
                 record.appid, record.market_hash_name, currency
             )
-            next_stage = record.stage + 1
-            next_strategy, _duration = ladder[next_stage]
+            next_stage_index = record.stage + 1
+            next_stage = stages[next_stage_index]
             points = _as_points(
                 self.store.prices(record.appid, record.market_hash_name, currency.value)
             )
-            decision = calculate_price(next_strategy, points)
-            seller_price = max(record.minimum_receive_minor, decision.seller_receives_minor)
-            from app.services.pricing import buyer_pays_for_seller_receive
-
-            buyer_price = buyer_pays_for_seller_receive(seller_price)
+            seller_price, buyer_price = self.stage_price(
+                next_stage,
+                points,
+                minimum_receive_minor=record.minimum_receive_minor,
+            )
             self.store.update_listing(
                 record.id,
                 state=ListingState.PLANNED,
-                stage=next_stage,
-                strategy=next_strategy,
+                stage=next_stage_index,
+                strategy=next_stage.pricing_source,
+                strategy_profile_id=profile_id,
                 seller_price_minor=seller_price,
                 buyer_price_minor=buyer_price,
                 steam_listing_id=None,
@@ -252,7 +286,11 @@ class ListingManager:
             self.store.audit(
                 "listing.reprice",
                 record.assetid,
-                {"stage": next_stage, "strategy": next_strategy.value},
+                {
+                    "stage": next_stage_index,
+                    "strategy_profile_id": profile_id,
+                    "stage_definition": next_stage.model_dump(mode="json"),
+                },
             )
             processed += 1
             resubmit_ids.append(record.id)

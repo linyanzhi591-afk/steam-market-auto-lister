@@ -454,40 +454,87 @@ class SteamMarketService:
             raise RuntimeError(f"Steam 撤单失败：HTTP {response.status}")
 
     async def active_listings(self) -> list[dict[str, object]]:
-        """读取我的市场挂单页面，返回可用于状态匹配的最小字段集合。"""
+        """分页读取 Steam 我的在售，包含程序启动前创建的挂单。"""
+        listings: list[dict[str, object]] = []
         async with self.session.browser_context() as context:
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(
-                "https://steamcommunity.com/market/",
-                wait_until="domcontentloaded",
-                timeout=45_000,
-            )
-            return await page.evaluate(
-                """
-                () => Array.from(document.querySelectorAll('[id^="mylisting_"]')).map(row => {
-                  const id = row.id.replace('mylisting_', '');
-                  const name = row.querySelector('.market_listing_item_name')?.textContent?.trim() || '';
-                  const price = row.querySelector('.market_listing_price')?.textContent?.trim() || '';
-                  return { listing_id: id, market_hash_name: name, display_price: price };
-                })
-                """
-            )
+            api_page = await context.new_page()
+            parser_page = await context.new_page()
+            try:
+                start = 0
+                count = 100
+                while True:
+                    payload = await self._navigate_json_with_retry(
+                        api_page,
+                        "https://steamcommunity.com/market/mylistings/render/",
+                        params={"query": "", "start": start, "count": count},
+                    )
+                    html = str(payload.get("results_html", ""))
+                    await parser_page.set_content(f"<main>{html}</main>")
+                    page_rows = await parser_page.evaluate(
+                        """
+                        () => Array.from(
+                          document.querySelectorAll('[id^="mylisting_"]')
+                        ).map(row => {
+                          const listingId = row.id.replace('mylisting_', '');
+                          const name = row.querySelector(
+                            '.market_listing_item_name'
+                          )?.textContent?.trim() || '';
+                          const price = row.querySelector(
+                            '.market_listing_price'
+                          )?.textContent?.trim() || '';
+                          const action = Array.from(
+                            row.querySelectorAll('[href], [onclick]')
+                          ).map(node =>
+                            `${node.getAttribute('href') || ''} ${
+                              node.getAttribute('onclick') || ''
+                            }`
+                          ).find(text =>
+                            text.includes('MarketListing') && text.includes(listingId)
+                          ) || '';
+                          const args = action.match(
+                            /\\(\\s*'[^']*'\\s*,\\s*'(\\d+)'\\s*,\\s*(\\d+)\\s*,\\s*'([^']+)'\\s*,\\s*'([^']+)'/
+                          );
+                          const marketLink = row.querySelector(
+                            'a.market_listing_item_name_link'
+                          )?.href || '';
+                          const appMatch = marketLink.match(/\\/market\\/listings\\/(\\d+)\\//);
+                          return {
+                            listing_id: listingId,
+                            market_hash_name: name,
+                            display_price: price,
+                            appid: args ? Number(args[2]) : (
+                              appMatch ? Number(appMatch[1]) : 0
+                            ),
+                            contextid: args ? args[3] : '',
+                            assetid: args ? args[4] : ''
+                          };
+                        })
+                        """
+                    )
+                    listings.extend(page_rows)
+                    total = int(payload.get("total_count", len(listings)))
+                    start += len(page_rows)
+                    if not page_rows or start >= total:
+                        break
+                    await asyncio.sleep(settings.request_delay_seconds)
+            finally:
+                await parser_page.close()
+                await api_page.close()
+        return listings
 
     async def recent_sales(self) -> set[str]:
         """读取最近市场历史，用于区分售出与手动撤单。"""
         async with self.session.browser_context() as context:
-            response = await context.request.get(
+            page = context.pages[0] if context.pages else await context.new_page()
+            payload = await self._navigate_json_with_retry(
+                page,
                 "https://steamcommunity.com/market/myhistory/render/",
                 params={"query": "", "start": 0, "count": 100},
-                timeout=45_000,
             )
-            if not response.ok:
-                return set()
-            payload = await response.json()
             html = str(payload.get("results_html", ""))
-            page = await context.new_page()
-            await page.set_content(f"<main>{html}</main>")
-            names = await page.evaluate(
+            parser_page = await context.new_page()
+            await parser_page.set_content(f"<main>{html}</main>")
+            names = await parser_page.evaluate(
                 """
                 () => Array.from(document.querySelectorAll('.market_listing_row'))
                   .filter(row => {
@@ -498,7 +545,7 @@ class SteamMarketService:
                   .filter(Boolean)
                 """
             )
-            await page.close()
+            await parser_page.close()
             return set(names)
 
 

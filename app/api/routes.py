@@ -21,6 +21,8 @@ from app.core.models import (
     PricingStrategy,
     SessionActionResult,
     SessionStatus,
+    StrategyProfile,
+    StrategyProfileInput,
     SyncResult,
 )
 from app.services.listing_manager import listing_manager
@@ -163,12 +165,44 @@ async def create_listing_plans(request: ListingPlanRequest) -> list[ListingRecor
         return await listing_manager.create_plans(
             request.strategy,
             request.currency,
+            strategy_profile_id=request.strategy_profile_id,
             assetids=request.assetids,
             minimum_receive_minor=request.minimum_receive_minor,
             maximum_buyer_price_minor=request.maximum_buyer_price_minor,
             maximum_items=request.maximum_items,
             excluded_names=request.excluded_names,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/strategy-profiles", response_model=list[StrategyProfile])
+def strategy_profiles() -> list[StrategyProfile]:
+    return database.strategy_profiles()
+
+
+@router.post("/strategy-profiles", response_model=StrategyProfile)
+def create_strategy_profile(request: StrategyProfileInput) -> StrategyProfile:
+    try:
+        return database.save_strategy_profile(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/strategy-profiles/{profile_id}", response_model=StrategyProfile)
+def update_strategy_profile(
+    profile_id: int, request: StrategyProfileInput
+) -> StrategyProfile:
+    try:
+        return database.save_strategy_profile(request, profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/strategy-profiles/{profile_id}", status_code=204)
+def delete_strategy_profile(profile_id: int) -> None:
+    try:
+        database.delete_strategy_profile(profile_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

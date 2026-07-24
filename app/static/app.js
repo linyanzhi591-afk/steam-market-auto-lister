@@ -1,6 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
 let currentListings = [];
 let groupedInventory = [];
+let strategyProfiles = [];
+let editingStrategy = null;
+let currentAppSettings = null;
 
 async function request(path, options = {}) {
   const response = await fetch(path, options);
@@ -104,6 +107,93 @@ function renderBlacklist(items) {
   $("#blacklist-body").dataset.items = JSON.stringify(items);
 }
 
+const pricingSourceLabels = {
+  robust_median: "30天稳健中位价",
+  market_follow: "市场跟随价",
+  trend: "趋势预测价",
+  fast_sell: "快速出售价",
+};
+
+function defaultStage() {
+  return {
+    name: "新阶段",
+    pricing_source: "robust_median",
+    adjustment_percent: 0,
+    adjustment_fixed_minor: 0,
+    absolute_floor_minor: 1,
+    median_floor_percent: 0,
+    duration_hours: 24,
+    action_after_timeout: "next",
+  };
+}
+
+function renderStrategySelectors() {
+  const options = strategyProfiles.map((profile) =>
+    `<option value="${profile.id}">${escapeHtml(profile.name)}${profile.is_default ? "（默认）" : ""}</option>`
+  ).join("");
+  $("#strategy-profile-select").innerHTML = options;
+  $("#plan-strategy").innerHTML = options;
+  const selected = editingStrategy || strategyProfiles.find((profile) => profile.is_default) || strategyProfiles[0];
+  if (selected) {
+    $("#strategy-profile-select").value = String(selected.id || "");
+    $("#plan-strategy").value = String(selected.id || "");
+  }
+}
+
+function renderStrategyEditor(profile) {
+  editingStrategy = structuredClone(profile);
+  $("#strategy-profile-name").value = editingStrategy.name;
+  $("#strategy-is-default").checked = editingStrategy.is_default;
+  $("#strategy-stages").innerHTML = editingStrategy.stages.map((stage, index) => `
+    <article class="stage-card" data-stage-index="${index}">
+      <div class="stage-card-head">
+        <strong>阶段 ${index + 1}</strong>
+        <div class="actions">
+          <button class="secondary stage-up" type="button">上移</button>
+          <button class="secondary stage-down" type="button">下移</button>
+          <button class="danger stage-delete" type="button">删除</button>
+        </div>
+      </div>
+      <div class="stage-fields">
+        <label>阶段名称<input data-field="name" value="${escapeHtml(stage.name)}" /></label>
+        <label>定价来源<select data-field="pricing_source">
+          ${Object.entries(pricingSourceLabels).map(([value, label]) =>
+            `<option value="${value}" ${stage.pricing_source === value ? "selected" : ""}>${label}</option>`
+          ).join("")}
+        </select></label>
+        <label>百分比调整<input data-field="adjustment_percent" type="number" step="0.1" min="-90" max="500" value="${stage.adjustment_percent}" /></label>
+        <label>固定金额调整<input data-field="adjustment_fixed" type="number" step="0.01" value="${stage.adjustment_fixed_minor / 100}" /></label>
+        <label>绝对到账底价<input data-field="absolute_floor" type="number" min="0.01" step="0.01" value="${stage.absolute_floor_minor / 100}" /></label>
+        <label>中位价底线比例<input data-field="median_floor_percent" type="number" min="0" max="300" step="0.1" value="${stage.median_floor_percent}" /></label>
+        <label>持续时间（小时）<input data-field="duration_hours" type="number" min="1" max="720" value="${stage.duration_hours}" /></label>
+        <label>超时动作<select data-field="action_after_timeout">
+          <option value="next" ${stage.action_after_timeout === "next" ? "selected" : ""}>进入下一阶段</option>
+          <option value="pause" ${stage.action_after_timeout === "pause" ? "selected" : ""}>暂停并人工处理</option>
+        </select></label>
+      </div>
+    </article>
+  `).join("");
+}
+
+function collectStrategyEditor() {
+  const stages = Array.from(document.querySelectorAll(".stage-card")).map((card) => ({
+    name: card.querySelector('[data-field="name"]').value.trim(),
+    pricing_source: card.querySelector('[data-field="pricing_source"]').value,
+    adjustment_percent: Number(card.querySelector('[data-field="adjustment_percent"]').value),
+    adjustment_fixed_minor: Math.round(Number(card.querySelector('[data-field="adjustment_fixed"]').value) * 100),
+    absolute_floor_minor: Math.round(Number(card.querySelector('[data-field="absolute_floor"]').value) * 100),
+    median_floor_percent: Number(card.querySelector('[data-field="median_floor_percent"]').value),
+    duration_hours: Number(card.querySelector('[data-field="duration_hours"]').value),
+    action_after_timeout: card.querySelector('[data-field="action_after_timeout"]').value,
+  }));
+  if (!stages.length) throw new Error("策略至少需要一个阶段");
+  return {
+    name: $("#strategy-profile-name").value.trim(),
+    is_default: $("#strategy-is-default").checked,
+    stages,
+  };
+}
+
 function renderListings(items) {
   currentListings = items;
   $("#listings-body").innerHTML = items.length
@@ -122,11 +212,12 @@ async function load() {
     ]);
     const currency = appSettings.currency;
     $("#currency").value = currency;
-    const [health, dashboard, strategies, inventory, listings, blacklist] = await Promise.all([
+    const [health, dashboard, inventory, listings, blacklist, profiles] = await Promise.all([
       getJSON("/api/health"),
-      getJSON(`/api/dashboard?currency=${currency}`), getJSON("/api/strategies"),
+      getJSON(`/api/dashboard?currency=${currency}`),
       getJSON("/api/inventory?marketable_only=true"), getJSON("/api/listings"),
       getJSON("/api/blacklist"),
+      getJSON("/api/strategy-profiles"),
     ]);
     $("#health").textContent = health.status === "ok" ? "本地服务正常" : "服务异常";
     $("#mode-label").textContent = dashboard.dry_run ? "演练模式。" : "真实市场模式已启用。";
@@ -134,15 +225,14 @@ async function load() {
     $("#sellable").textContent = dashboard.sellable_items;
     $("#pending").textContent = dashboard.pending_confirmation;
     $("#active").textContent = dashboard.active;
-    $("#strategies").innerHTML = strategies
-      .map((item) => `<div class="strategy"><strong>${item.name}</strong><small>${item.id}</small></div>`)
-      .join("");
-    $("#default-strategy").value = appSettings.default_strategy;
-    $("#plan-strategy").value = appSettings.default_strategy;
-    $("#trend-hours").value = appSettings.trend_hours;
-    $("#robust-hours").value = appSettings.robust_median_hours;
-    $("#follow-hours").value = appSettings.market_follow_hours;
-    $("#fast-hours").value = appSettings.fast_sell_hours;
+    currentAppSettings = appSettings;
+    strategyProfiles = profiles;
+    const preferred = strategyProfiles.find((profile) => profile.is_default) || strategyProfiles[0];
+    if (!editingStrategy || !strategyProfiles.some((profile) => profile.id === editingStrategy.id)) {
+      editingStrategy = preferred;
+    }
+    renderStrategySelectors();
+    if (editingStrategy) renderStrategyEditor(editingStrategy);
     renderInventory(inventory);
     renderListings(listings);
     renderBlacklist(blacklist);
@@ -222,7 +312,8 @@ $("#create-plans").addEventListener("click", () => busy($("#create-plans"), asyn
   if (!selectedAssetids.length) throw new Error("请先选择至少一项库存");
   const plans = await post("/api/listings/plan", {
     assetids: selectedAssetids,
-    strategy: $("#plan-strategy").value,
+    strategy_profile_id: Number($("#plan-strategy").value),
+    strategy: "robust_median",
     currency: $("#currency").value,
     minimum_receive_minor: Math.round(Number($("#minimum-price").value) * 100),
     maximum_buyer_price_minor: Math.round(Number($("#maximum-price").value) * 100),
@@ -272,15 +363,60 @@ $("#blacklist-body").addEventListener("click", async (event) => {
 });
 $("#save-settings").addEventListener("click", () => busy($("#save-settings"), async () => {
   const saved = await put("/api/settings", {
+    ...currentAppSettings,
     currency: $("#currency").value,
-    default_strategy: $("#default-strategy").value,
-    trend_hours: Number($("#trend-hours").value),
-    robust_median_hours: Number($("#robust-hours").value),
-    market_follow_hours: Number($("#follow-hours").value),
-    fast_sell_hours: Number($("#fast-hours").value),
   });
-  $("#plan-strategy").value = saved.default_strategy;
+  currentAppSettings = saved;
   toast("设置已保存");
+}));
+$("#strategy-profile-select").addEventListener("change", (event) => {
+  const profile = strategyProfiles.find((item) => item.id === Number(event.target.value));
+  if (profile) renderStrategyEditor(profile);
+});
+$("#add-stage").addEventListener("click", () => {
+  editingStrategy.stages.push(defaultStage());
+  renderStrategyEditor(editingStrategy);
+});
+$("#strategy-stages").addEventListener("click", (event) => {
+  const card = event.target.closest(".stage-card");
+  if (!card) return;
+  editingStrategy = { ...editingStrategy, ...collectStrategyEditor() };
+  const index = Number(card.dataset.stageIndex);
+  if (event.target.closest(".stage-delete")) {
+    editingStrategy.stages.splice(index, 1);
+  } else if (event.target.closest(".stage-up") && index > 0) {
+    [editingStrategy.stages[index - 1], editingStrategy.stages[index]] =
+      [editingStrategy.stages[index], editingStrategy.stages[index - 1]];
+  } else if (event.target.closest(".stage-down") && index < editingStrategy.stages.length - 1) {
+    [editingStrategy.stages[index + 1], editingStrategy.stages[index]] =
+      [editingStrategy.stages[index], editingStrategy.stages[index + 1]];
+  } else {
+    return;
+  }
+  renderStrategyEditor(editingStrategy);
+});
+$("#new-strategy").addEventListener("click", () => {
+  renderStrategyEditor({ id: null, name: "新策略", is_default: false, stages: [defaultStage()] });
+});
+$("#duplicate-strategy").addEventListener("click", () => {
+  const copy = collectStrategyEditor();
+  renderStrategyEditor({ id: null, ...copy, name: `${copy.name} 副本`, is_default: false });
+});
+$("#save-strategy").addEventListener("click", () => busy($("#save-strategy"), async () => {
+  const payload = collectStrategyEditor();
+  const saved = editingStrategy.id
+    ? await put(`/api/strategy-profiles/${editingStrategy.id}`, payload)
+    : await post("/api/strategy-profiles", payload);
+  editingStrategy = saved;
+  toast("策略已保存");
+  await load();
+}));
+$("#delete-strategy").addEventListener("click", () => busy($("#delete-strategy"), async () => {
+  if (!editingStrategy.id) throw new Error("尚未保存的新策略无需删除");
+  await remove(`/api/strategy-profiles/${editingStrategy.id}`);
+  editingStrategy = null;
+  toast("策略已删除");
+  await load();
 }));
 document.querySelectorAll(".view-tab").forEach((button) => {
   button.addEventListener("click", () => {
