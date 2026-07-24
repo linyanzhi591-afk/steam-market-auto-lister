@@ -318,6 +318,12 @@ class ListingManager:
                 updated += 1
         return SyncResult(listings_updated=updated)
 
+    async def refresh_current_listings(self) -> SyncResult:
+        """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
+        remote = await self.market.active_listings()
+        imported = self.store.import_active_listings(remote)
+        return SyncResult(listings_updated=imported)
+
     async def process_expired(self, currency: Currency) -> int:
         now = datetime.now(UTC)
         processed = 0

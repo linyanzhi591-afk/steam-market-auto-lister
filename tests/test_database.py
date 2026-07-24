@@ -132,8 +132,7 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
     database.clear_runtime_cache()
 
     assert database.inventory(marketable_only=False) == []
-    assert len(database.listings()) == 1
-    assert database.listings()[0].state is ListingState.ACTIVE
+    assert database.listings() == []
     assert database.settings().currency is Currency.INR
     assert database.settings().trend_hours == 96
     assert database.blacklist()[0]["market_hash_name"] == "Blocked"

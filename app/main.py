@@ -9,6 +9,7 @@ from playwright.async_api import Error as PlaywrightError
 from app.api.routes import router
 from app.core.config import settings
 from app.core.database import database
+from app.services.listing_manager import listing_manager
 from app.services.scheduler import background_scheduler
 from app.services.steam_session import steam_session_service
 
@@ -23,6 +24,12 @@ async def lifespan(_app: FastAPI):
     session = await steam_session_service.restore()
     if session.wallet_currency:
         database.save_currency(session.wallet_currency)
+    if session.state.value == "logged_in":
+        try:
+            await listing_manager.refresh_current_listings()
+        except (OSError, PlaywrightError, RuntimeError):
+            # 启动刷新失败时保持空列表，用户可在界面手动重试。
+            pass
     background_scheduler.start()
     yield
     await background_scheduler.stop()
