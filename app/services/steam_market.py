@@ -1,5 +1,6 @@
 import asyncio
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -129,6 +130,15 @@ def enrich_active_listing_rows(
         )
         converted_price = int(info.get("converted_price") or 0)
         converted_fee = int(info.get("converted_fee") or 0)
+        listed_at_value = info.get("time_created")
+        if isinstance(listed_at_value, (int, float)) and listed_at_value > 0:
+            listed_at = datetime.fromtimestamp(listed_at_value, UTC).isoformat()
+        else:
+            listed_at = str(
+                raw_row.get("listed_at")
+                or raw_row.get("listed_at_text")
+                or ""
+            )
         result.append(
             {
                 **raw_row,
@@ -138,6 +148,7 @@ def enrich_active_listing_rows(
                 "assetid": assetid,
                 "market_hash_name": name,
                 "buyer_price_minor": converted_price + converted_fee,
+                "listed_at": listed_at,
             }
         )
     return result
@@ -151,6 +162,35 @@ class SteamMarketService:
     ) -> None:
         self.session = session or steam_session_service
         self.store = store or database
+
+    async def _ensure_session_id(self, context: Any) -> str:
+        """返回 Steam CSRF token；缺失时写入与表单同值的新 Cookie。"""
+        cookies = await context.cookies()
+        session_id = next(
+            (
+                str(cookie["value"])
+                for cookie in cookies
+                if cookie.get("name") == "sessionid"
+                and "steamcommunity.com" in str(cookie.get("domain", ""))
+            ),
+            None,
+        )
+        if session_id:
+            return session_id
+        session_id = secrets.token_hex(12)
+        await context.add_cookies(
+            [
+                {
+                    "name": "sessionid",
+                    "value": session_id,
+                    "domain": "steamcommunity.com",
+                    "path": "/",
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
+        return session_id
 
     async def _get_with_retry(
         self,
@@ -482,12 +522,7 @@ class SteamMarketService:
         if settings.dry_run or not settings.allow_market_writes:
             raise PermissionError("真实市场操作未启用")
         async with self.session.browser_context() as context:
-            cookies = await context.cookies(["https://steamcommunity.com"])
-            session_id = next(
-                (cookie["value"] for cookie in cookies if cookie["name"] == "sessionid"), None
-            )
-            if not session_id:
-                raise RuntimeError("Steam 会话缺少 sessionid")
+            session_id = await self._ensure_session_id(context)
             try:
                 response = await context.request.post(
                     "https://steamcommunity.com/market/sellitem/",
@@ -520,13 +555,10 @@ class SteamMarketService:
         if settings.dry_run or not settings.allow_market_writes:
             raise PermissionError("真实市场操作未启用")
         async with self.session.browser_context() as context:
-            cookies = await context.cookies(["https://steamcommunity.com"])
-            session_id = next(
-                (cookie["value"] for cookie in cookies if cookie["name"] == "sessionid"), None
-            )
+            session_id = await self._ensure_session_id(context)
             response = await context.request.post(
                 f"https://steamcommunity.com/market/removelisting/{steam_listing_id}",
-                form={"sessionid": session_id or ""},
+                form={"sessionid": session_id},
                 headers={"Referer": "https://steamcommunity.com/market/"},
             )
         if not response.ok:
@@ -556,7 +588,9 @@ class SteamMarketService:
                         ).map(row => {
                           const listingId = (row.id.match(/^mylisting_(\\d+)$/) || [])[1] || '';
                           const name = row.querySelector(
-                            '.market_listing_item_name'
+                            `#mylisting_${listingId}_name`
+                          )?.textContent?.trim() || row.querySelector(
+                            '.market_listing_item_name_link'
                           )?.textContent?.trim() || '';
                           const price = row.querySelector(
                             '.market_listing_price'
@@ -577,6 +611,9 @@ class SteamMarketService:
                             'a.market_listing_item_name_link'
                           )?.href || '';
                           const appMatch = marketLink.match(/\\/market\\/listings\\/(\\d+)\\//);
+                          const listedAtText = row.querySelector(
+                            '.market_listing_listed_date'
+                          )?.textContent?.trim() || '';
                           return {
                             listing_id: listingId,
                             market_hash_name: name,
@@ -585,7 +622,9 @@ class SteamMarketService:
                               appMatch ? Number(appMatch[1]) : 0
                             ),
                             contextid: args ? args[3] : '',
-                            assetid: args ? args[4] : ''
+                            assetid: args ? args[4] : '',
+                            listed_at_text: listedAtText,
+                            listed_at: listedAtText
                           };
                         })
                         """

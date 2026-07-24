@@ -48,8 +48,28 @@ def test_active_listing_rows_are_enriched_and_deduplicated() -> None:
             "contextid": "2",
             "assetid": "100",
             "buyer_price_minor": 700,
+            "listed_at": "",
         }
     ]
+
+
+def test_missing_session_id_cookie_is_created() -> None:
+    class FakeContext:
+        def __init__(self):
+            self.added = []
+
+        async def cookies(self):
+            return []
+
+        async def add_cookies(self, cookies):
+            self.added = cookies
+
+    context = FakeContext()
+    service = SteamMarketService(session=object(), store=object())
+    session_id = asyncio.run(service._ensure_session_id(context))
+    assert len(session_id) == 24
+    assert context.added[0]["name"] == "sessionid"
+    assert context.added[0]["value"] == session_id
 
 
 def test_parse_inventory_payload_joins_descriptions() -> None:

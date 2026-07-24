@@ -48,6 +48,12 @@ function money(minor) {
   return `${symbol}${(minor / 100).toFixed(2)}`;
 }
 
+function displaySteamTime(value) {
+  if (!value) return "Steam 未提供";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? escapeHtml(value) : parsed.toLocaleString();
+}
+
 function toast(message) {
   $("#toast").textContent = message;
   $("#toast").hidden = false;
@@ -216,10 +222,11 @@ function renderListings(items) {
         <td><input class="active-select" type="checkbox" data-listing-id="${item.id}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
         <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
+        <td>${displaySteamTime(item.steam_listed_at)}</td>
         <td>${item.next_action_at ? new Date(item.next_action_at).toLocaleString() : "未设置"}</td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(item.error_message || "")}</td>
       </tr>`).join("")
-    : '<tr><td colspan="7">当前没有已同步的在售挂单</td></tr>';
+    : '<tr><td colspan="8">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }

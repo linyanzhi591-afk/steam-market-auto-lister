@@ -87,6 +87,7 @@ class Database:
                     buyer_price_minor INTEGER NOT NULL,
                     minimum_receive_minor INTEGER NOT NULL DEFAULT 1,
                     steam_listing_id TEXT,
+                    steam_listed_at TEXT,
                     error_message TEXT,
                     active_since TEXT,
                     next_action_at TEXT,
@@ -150,6 +151,8 @@ class Database:
                 db.execute("ALTER TABLE listings ADD COLUMN strategy_profile_id INTEGER")
             if "error_message" not in columns:
                 db.execute("ALTER TABLE listings ADD COLUMN error_message TEXT")
+            if "steam_listed_at" not in columns:
+                db.execute("ALTER TABLE listings ADD COLUMN steam_listed_at TEXT")
             profile_count = db.execute("SELECT COUNT(*) FROM strategy_profiles").fetchone()[0]
             if profile_count == 0:
                 now = utc_now()
@@ -538,6 +541,7 @@ class Database:
                             market_hash_name = CASE WHEN ? != '' THEN ? ELSE market_hash_name END,
                             seller_price_minor = ?,
                             buyer_price_minor = ?,
+                            steam_listed_at = CASE WHEN ? != '' THEN ? ELSE steam_listed_at END,
                             error_message = NULL,
                             updated_at = ?
                         WHERE id = ?
@@ -554,6 +558,8 @@ class Database:
                             remote_name,
                             seller_price,
                             max(buyer_price, seller_price),
+                            str(item.get("listed_at") or ""),
+                            str(item.get("listed_at") or ""),
                             utc_now(),
                             existing["id"],
                         ),
@@ -567,8 +573,9 @@ class Database:
                             strategy, strategy_profile_id, stage,
                             seller_price_minor, buyer_price_minor,
                             minimum_receive_minor, steam_listing_id,
-                            active_since, next_action_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?, ?, ?, ?)
+                            steam_listed_at, active_since, next_action_at,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             assetid,
@@ -581,6 +588,7 @@ class Database:
                             seller_price,
                             max(buyer_price, seller_price),
                             steam_listing_id,
+                            str(item.get("listed_at") or "") or None,
                             now.isoformat(),
                             next_action.isoformat(),
                             now.isoformat(),
@@ -618,6 +626,7 @@ class Database:
             "buyer_price_minor",
             "minimum_receive_minor",
             "steam_listing_id",
+            "steam_listed_at",
             "error_message",
             "active_since",
             "next_action_at",
