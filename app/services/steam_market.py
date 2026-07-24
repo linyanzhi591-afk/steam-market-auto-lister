@@ -276,8 +276,9 @@ class SteamMarketService:
                 return await self.update_price_history(
                     appid, market_hash_name, currency, context=owned_context
                 )
-        response = await self._get_with_retry(
-            context.request,
+        page = context.pages[0] if context.pages else await context.new_page()
+        payload = await self._page_json_with_retry(
+            page,
             "https://steamcommunity.com/market/pricehistory/",
             params={
                 "appid": appid,
@@ -285,9 +286,6 @@ class SteamMarketService:
                 "currency": CURRENCY_IDS[currency],
             },
         )
-        if not response.ok:
-            raise RuntimeError(f"价格历史请求失败：HTTP {response.status}")
-        payload = await response.json()
         if not payload.get("success"):
             raise RuntimeError("Steam 未返回有效价格历史")
         currency_marker = f"{payload.get('price_prefix', '')}{payload.get('price_suffix', '')}"
@@ -299,6 +297,8 @@ class SteamMarketService:
                 f"Steam 钱包返回的币种与 {currency.value} 模式不一致，请切换正确币种"
             )
         rows = parse_price_history(payload)
+        if not rows:
+            raise RuntimeError("Steam 返回成功，但最近30天价格数据为空或格式无法识别")
         self.store.save_prices(appid, market_hash_name, currency.value, rows)
         return len(rows)
 

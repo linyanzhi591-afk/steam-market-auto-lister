@@ -147,8 +147,22 @@ $("#sync-inventory").addEventListener("click", () => busy($("#sync-inventory"), 
   }
 }));
 $("#sync-prices").addEventListener("click", () => busy($("#sync-prices"), async () => {
-  const result = await post(`/api/sync/prices?currency=${$("#currency").value}`);
-  toast(`已更新 ${result.price_items_updated} 种饰品的30天价格`);
+  const status = $("#sync-status");
+  status.className = "sync-status";
+  status.textContent = "正在读取每种饰品最近30天价格，请勿关闭页面…";
+  try {
+    const result = await post(`/api/sync/prices?currency=${$("#currency").value}`);
+    if (result.errors.length) {
+      throw new Error(`价格同步未完成：${result.errors.join("；")}`);
+    }
+    status.className = "sync-status success";
+    status.textContent = `价格同步完成：已更新 ${result.price_items_updated} 种饰品`;
+    toast(status.textContent);
+  } catch (error) {
+    status.className = "sync-status error";
+    status.textContent = error.message;
+    throw error;
+  }
 }));
 $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), async () => {
   const result = await post("/api/sync/listings");

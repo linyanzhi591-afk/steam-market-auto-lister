@@ -116,15 +116,18 @@ def listings(
 
 @router.post("/listings/plan", response_model=list[ListingRecord])
 async def create_listing_plans(request: ListingPlanRequest) -> list[ListingRecord]:
-    return await listing_manager.create_plans(
-        request.strategy,
-        request.currency,
-        assetids=request.assetids,
-        minimum_receive_minor=request.minimum_receive_minor,
-        maximum_buyer_price_minor=request.maximum_buyer_price_minor,
-        maximum_items=request.maximum_items,
-        excluded_names=request.excluded_names,
-    )
+    try:
+        return await listing_manager.create_plans(
+            request.strategy,
+            request.currency,
+            assetids=request.assetids,
+            minimum_receive_minor=request.minimum_receive_minor,
+            maximum_buyer_price_minor=request.maximum_buyer_price_minor,
+            maximum_items=request.maximum_items,
+            excluded_names=request.excluded_names,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/listings/execute", response_model=list[ListingRecord])

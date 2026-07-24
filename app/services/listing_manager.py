@@ -63,6 +63,7 @@ class ListingManager:
         ]
         selected = selected[: maximum_items or settings.max_batch_items]
         created: list[int] = []
+        missing_prices: set[str] = set()
         for asset in selected:
             points = _as_points(
                 self.store.prices(
@@ -70,6 +71,7 @@ class ListingManager:
                 )
             )
             if not points:
+                missing_prices.add(str(asset["market_hash_name"]))
                 continue
             decision = calculate_price(strategy, points)
             seller_price = max(minimum_receive_minor, decision.seller_receives_minor)
@@ -101,6 +103,9 @@ class ListingManager:
                     "buyer_price_minor": buyer_price,
                 },
             )
+        if selected and not created and missing_prices:
+            names = "、".join(sorted(missing_prices)[:5])
+            raise ValueError(f"没有可用的30天价格数据：{names}；请先成功同步价格")
         return [record for listing_id in created if (record := self.store.listing(listing_id))]
 
     async def execute(self, listing_ids: list[int], confirmation_text: str) -> list[ListingRecord]:
