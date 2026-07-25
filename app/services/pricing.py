@@ -121,12 +121,25 @@ def trend_price(points: list[PricePoint]) -> PriceDecision:
                 "reason": "有效数据不足 7 个点，趋势策略回退到稳健中位价",
             }
         )
-    xs = list(range(len(cleaned)))
+    first_timestamp = cleaned[0].timestamp
+    xs = [
+        (point.timestamp - first_timestamp).total_seconds() / 86_400
+        for point in cleaned
+    ]
     ys = [point.price_minor for point in cleaned]
     x_mean, y_mean = sum(xs) / len(xs), sum(ys) / len(ys)
     denominator = sum((x - x_mean) ** 2 for x in xs)
+    if denominator == 0:
+        fallback = robust_median(cleaned)
+        return fallback.model_copy(
+            update={
+                "strategy": PricingStrategy.TREND,
+                "confidence": "low",
+                "reason": "有效成交点时间相同，趋势策略回退到稳健中位价",
+            }
+        )
     slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys, strict=True)) / denominator
-    prediction = int(y_mean + slope * (len(xs) - x_mean))
+    prediction = int(y_mean + slope * (max(xs) + 1 - x_mean))
     sorted_prices = sorted(ys)
     lower = sorted_prices[len(sorted_prices) // 4]
     upper = sorted_prices[(len(sorted_prices) * 3) // 4]

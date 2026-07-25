@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.models import Currency, PricePoint, PricingStrategy, StrategyStage
-from app.services.listing_manager import ListingManager
+from app.services.listing_manager import ListingManager, _as_points
 
 
 def test_plan_explains_missing_price_history() -> None:
@@ -48,3 +48,38 @@ def test_stage_adjustment_and_floor_are_applied() -> None:
     )
     assert seller_price == 1200
     assert buyer_price == 1380
+
+
+def test_history_buyer_price_is_converted_to_seller_receive() -> None:
+    points = _as_points(
+        [
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "price_minor": 1150,
+                "volume": 3,
+            }
+        ]
+    )
+    assert points[0].price_minor == 1000
+
+
+def test_fast_sell_uses_current_lowest_market_price() -> None:
+    manager = ListingManager(store=object(), market=object())
+    now = datetime.now(UTC)
+    points = [
+        PricePoint(timestamp=now, price_minor=price, volume=1)
+        for price in [900, 1000, 1100, 1200]
+    ]
+    stage = StrategyStage(
+        name="快速出售",
+        pricing_source=PricingStrategy.FAST_SELL,
+        duration_hours=24,
+    )
+    seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_receive_minor=1,
+        current_lowest_minor=920,
+    )
+    assert buyer_price <= 919
+    assert seller_price < 1000

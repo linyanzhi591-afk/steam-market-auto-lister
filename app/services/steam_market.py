@@ -597,16 +597,20 @@ class SteamMarketService:
         self, appid: int, market_hash_name: str, currency: Currency
     ) -> int | None:
         async with self.session.browser_context() as context:
-            response = await context.request.get(
-                "https://steamcommunity.com/market/priceoverview/",
-                params={
-                    "appid": appid,
-                    "market_hash_name": market_hash_name,
-                    "currency": CURRENCY_IDS[currency],
-                    "country": "CN" if currency is Currency.CNY else "IN",
-                },
-            )
-            payload = await response.json()
+            page = context.pages[0] if context.pages else await context.new_page()
+            try:
+                payload = await self._navigate_json_with_retry(
+                    page,
+                    "https://steamcommunity.com/market/priceoverview/",
+                    params={
+                        "appid": appid,
+                        "market_hash_name": market_hash_name,
+                        "currency": CURRENCY_IDS[currency],
+                        "country": "CN" if currency is Currency.CNY else "IN",
+                    },
+                )
+            except RuntimeError:
+                return None
         value = str(payload.get("lowest_price", ""))
         cleaned = "".join(character for character in value if character.isdigit() or character in ".,")
         if not cleaned:

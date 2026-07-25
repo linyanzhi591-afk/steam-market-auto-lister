@@ -48,3 +48,14 @@ def test_fast_sell_uses_lower_price() -> None:
     ]
     decision = calculate_price(PricingStrategy.FAST_SELL, points)
     assert decision.price_minor == 1000
+
+
+def test_trend_falls_back_when_timestamps_are_identical() -> None:
+    now = datetime.now(UTC)
+    points = [
+        PricePoint(timestamp=now, price_minor=1000 + index * 10, volume=1)
+        for index in range(7)
+    ]
+    decision = calculate_price(PricingStrategy.TREND, points)
+    assert decision.strategy is PricingStrategy.TREND
+    assert "时间相同" in decision.reason

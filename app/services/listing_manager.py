@@ -16,6 +16,7 @@ from app.core.models import (
 from app.services.pricing import (
     buyer_pays_for_seller_receive,
     calculate_price,
+    seller_receive_for_buyer_pay,
 )
 from app.services.steam_market import SteamMarketService, steam_market_service
 
@@ -26,7 +27,11 @@ def _as_points(rows: list[sqlite3.Row]) -> list[PricePoint]:
     return [
         PricePoint(
             timestamp=datetime.fromisoformat(str(row["timestamp"])),
-            price_minor=int(row["price_minor"]),
+            price_minor=(
+                seller_receive_for_buyer_pay(int(row["price_minor"]))
+                if int(row["price_minor"]) >= 3
+                else 1
+            ),
             volume=int(row["volume"]),
         )
         for row in rows
@@ -65,8 +70,13 @@ class ListingManager:
         points: list[PricePoint],
         *,
         minimum_receive_minor: int,
+        current_lowest_minor: int | None = None,
     ) -> tuple[int, int]:
-        decision = calculate_price(stage.pricing_source, points)
+        decision = calculate_price(
+            stage.pricing_source,
+            points,
+            current_lowest_minor=current_lowest_minor,
+        )
         median_decision = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
         adjusted = round(
             decision.seller_receives_minor * (1 + stage.adjustment_percent / 100)
@@ -83,6 +93,22 @@ class ListingManager:
             median_floor,
         )
         return seller_price, buyer_pays_for_seller_receive(seller_price)
+
+    async def current_lowest_for_stage(
+        self,
+        stage: StrategyStage,
+        appid: int,
+        market_hash_name: str,
+        currency: Currency,
+    ) -> int | None:
+        if stage.pricing_source not in {
+            PricingStrategy.MARKET_FOLLOW,
+            PricingStrategy.FAST_SELL,
+        }:
+            return None
+        return await self.market.current_lowest_price(
+            appid, market_hash_name, currency
+        )
 
     async def create_plans(
         self,
@@ -108,6 +134,7 @@ class ListingManager:
         selected = selected[: maximum_items or settings.max_batch_items]
         created: list[int] = []
         missing_prices: set[str] = set()
+        lowest_price_cache: dict[tuple[int, str], int | None] = {}
         for asset in selected:
             points = _as_points(
                 self.store.prices(
@@ -117,10 +144,20 @@ class ListingManager:
             if not points:
                 missing_prices.add(str(asset["market_hash_name"]))
                 continue
+            item_key = (int(asset["appid"]), str(asset["market_hash_name"]))
+            if item_key not in lowest_price_cache:
+                lowest_price_cache[item_key] = await self.current_lowest_for_stage(
+                    first_stage,
+                    item_key[0],
+                    item_key[1],
+                    currency,
+                )
+            current_lowest = lowest_price_cache[item_key]
             seller_price, buyer_price = self.stage_price(
                 first_stage,
                 points,
                 minimum_receive_minor=minimum_receive_minor,
+                current_lowest_minor=current_lowest,
             )
             maximum = maximum_buyer_price_minor or settings.max_unit_buyer_price_minor
             if buyer_price > maximum:
@@ -240,10 +277,17 @@ class ListingManager:
                 )
                 if not points:
                     raise RuntimeError("没有可用的最近 30 天价格数据")
+                current_lowest = await self.current_lowest_for_stage(
+                    first_stage,
+                    record.appid,
+                    record.market_hash_name,
+                    currency,
+                )
                 seller_price, buyer_price = self.stage_price(
                     first_stage,
                     points,
                     minimum_receive_minor=record.minimum_receive_minor,
+                    current_lowest_minor=current_lowest,
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
                 self.store.update_listing(
@@ -351,10 +395,17 @@ class ListingManager:
             points = _as_points(
                 self.store.prices(record.appid, record.market_hash_name, currency.value)
             )
+            current_lowest = await self.current_lowest_for_stage(
+                next_stage,
+                record.appid,
+                record.market_hash_name,
+                currency,
+            )
             seller_price, buyer_price = self.stage_price(
                 next_stage,
                 points,
                 minimum_receive_minor=record.minimum_receive_minor,
+                current_lowest_minor=current_lowest,
             )
             self.store.update_listing(
                 record.id,
