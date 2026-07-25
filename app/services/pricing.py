@@ -9,12 +9,24 @@ def buyer_pays_for_seller_receive(
     *,
     steam_fee_rate: float = 0.05,
     publisher_fee_rate: float = 0.10,
+    steam_fee_minimum: int = 1,
+    steam_fee_base: int = 0,
+    publisher_fee_minimum: int = 1,
 ) -> int:
     """按 Steam 最小费用及向下取整规则估算买家支付金额。"""
     if seller_receive_minor < 1:
         raise ValueError("卖家到账金额必须大于 0")
-    steam_fee = max(1, math.floor(seller_receive_minor * steam_fee_rate))
-    publisher_fee = max(1, math.floor(seller_receive_minor * publisher_fee_rate))
+    steam_fee = math.floor(
+        max(seller_receive_minor * steam_fee_rate, steam_fee_minimum)
+        + steam_fee_base
+    )
+    publisher_fee = (
+        math.floor(
+            max(seller_receive_minor * publisher_fee_rate, publisher_fee_minimum)
+        )
+        if publisher_fee_rate > 0
+        else 0
+    )
     return seller_receive_minor + steam_fee + publisher_fee
 
 
@@ -23,6 +35,9 @@ def seller_receive_for_buyer_pay(
     *,
     steam_fee_rate: float = 0.05,
     publisher_fee_rate: float = 0.10,
+    steam_fee_minimum: int = 1,
+    steam_fee_base: int = 0,
+    publisher_fee_minimum: int = 1,
 ) -> int:
     """用整数搜索反算不超过买家支付价的最大卖家到账金额。"""
     if buyer_pay_minor < 3:
@@ -31,7 +46,12 @@ def seller_receive_for_buyer_pay(
     while low <= high:
         middle = (low + high) // 2
         if buyer_pays_for_seller_receive(
-            middle, steam_fee_rate=steam_fee_rate, publisher_fee_rate=publisher_fee_rate
+            middle,
+            steam_fee_rate=steam_fee_rate,
+            publisher_fee_rate=publisher_fee_rate,
+            steam_fee_minimum=steam_fee_minimum,
+            steam_fee_base=steam_fee_base,
+            publisher_fee_minimum=publisher_fee_minimum,
         ) <= buyer_pay_minor:
             low = middle + 1
         else:
@@ -95,13 +115,19 @@ def robust_median(points: list[PricePoint]) -> PriceDecision:
     )
 
 
-def market_follow(points: list[PricePoint], current_lowest_minor: int | None) -> PriceDecision:
+def market_follow(
+    points: list[PricePoint],
+    current_lowest_minor: int | None,
+    fee_options: dict[str, float | int] | None = None,
+) -> PriceDecision:
     cleaned = clean_points(points)
     if not cleaned:
         raise ValueError("最近 30 天没有有效成交数据")
     reference = _weighted_median(cleaned)
     if current_lowest_minor and current_lowest_minor > 2:
-        current_seller = seller_receive_for_buyer_pay(current_lowest_minor - 1)
+        current_seller = seller_receive_for_buyer_pay(
+            current_lowest_minor - 1, **(fee_options or {})
+        )
         price = max(int(reference * 0.85), min(reference, current_seller))
         reason = "参考 30 天中位价，并比当前最低买家支付价低一个最小单位"
     else:
@@ -153,7 +179,11 @@ def trend_price(points: list[PricePoint]) -> PriceDecision:
     )
 
 
-def fast_sell(points: list[PricePoint], current_lowest_minor: int | None) -> PriceDecision:
+def fast_sell(
+    points: list[PricePoint],
+    current_lowest_minor: int | None,
+    fee_options: dict[str, float | int] | None = None,
+) -> PriceDecision:
     cleaned = clean_points(points)
     if not cleaned:
         raise ValueError("最近 30 天没有有效成交数据")
@@ -161,7 +191,12 @@ def fast_sell(points: list[PricePoint], current_lowest_minor: int | None) -> Pri
     low_quartile = prices[len(prices) // 4]
     target = low_quartile
     if current_lowest_minor and current_lowest_minor > 2:
-        target = min(target, seller_receive_for_buyer_pay(current_lowest_minor - 1))
+        target = min(
+            target,
+            seller_receive_for_buyer_pay(
+                current_lowest_minor - 1, **(fee_options or {})
+            ),
+        )
     return _decision(
         PricingStrategy.FAST_SELL,
         target,
@@ -175,11 +210,12 @@ def calculate_price(
     points: list[PricePoint],
     *,
     current_lowest_minor: int | None = None,
+    fee_options: dict[str, float | int] | None = None,
 ) -> PriceDecision:
     if strategy is PricingStrategy.ROBUST_MEDIAN:
         return robust_median(points)
     if strategy is PricingStrategy.MARKET_FOLLOW:
-        return market_follow(points, current_lowest_minor)
+        return market_follow(points, current_lowest_minor, fee_options)
     if strategy is PricingStrategy.TREND:
         return trend_price(points)
-    return fast_sell(points, current_lowest_minor)
+    return fast_sell(points, current_lowest_minor, fee_options)

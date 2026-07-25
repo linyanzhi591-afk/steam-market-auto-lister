@@ -15,6 +15,7 @@ from app.core.models import (
     BlacklistRequest,
     Currency,
     DashboardSummary,
+    ListingCancelRequest,
     ListingExecuteRequest,
     ListingPlanRequest,
     ListingRecord,
@@ -180,6 +181,10 @@ def listings(
 @router.post("/listings/plan", response_model=list[ListingRecord])
 async def create_listing_plans(request: ListingPlanRequest) -> list[ListingRecord]:
     try:
+        if request.assetids:
+            await steam_market_service.sync_selected_prices(
+                request.assetids, request.currency
+            )
         return await listing_manager.create_plans(
             request.strategy,
             request.currency,
@@ -231,6 +236,11 @@ async def execute_listing_plans(request: ListingExecuteRequest) -> list[ListingR
         return await listing_manager.execute(request.listing_ids, request.confirmation_text)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/listings/cancel", response_model=list[ListingRecord])
+def cancel_listing_plans(request: ListingCancelRequest) -> list[ListingRecord]:
+    return listing_manager.cancel_new_listing_plans(request.listing_ids)
 
 
 @router.post("/listings/reprice", response_model=list[ListingRecord])

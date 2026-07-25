@@ -40,6 +40,19 @@ def test_fee_round_trip() -> None:
     assert seller_receive_for_buyer_pay(buyer_pays) == 1000
 
 
+def test_wallet_minimum_fee_and_base_are_applied() -> None:
+    options = {
+        "steam_fee_rate": 0.05,
+        "publisher_fee_rate": 0.10,
+        "steam_fee_minimum": 10,
+        "steam_fee_base": 2,
+        "publisher_fee_minimum": 1,
+    }
+    buyer_pays = buyer_pays_for_seller_receive(100, **options)
+    assert buyer_pays == 122
+    assert seller_receive_for_buyer_pay(buyer_pays, **options) == 100
+
+
 def test_fast_sell_uses_lower_price() -> None:
     now = datetime.now(UTC)
     points = [

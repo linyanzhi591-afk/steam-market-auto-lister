@@ -262,6 +262,9 @@ function renderListings(items) {
   }, new Map()).values());
   $("#new-listings-body").innerHTML = newListings.length
     ? newListings.map((item) => `<tr>
+        <td><input class="plan-select" type="checkbox" data-listing-id="${item.id}"
+          ${["planned", "failed"].includes(item.state) ? "" : "disabled"}
+          aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
         <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
         <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
@@ -269,7 +272,9 @@ function renderListings(items) {
           item.error_message || (item.state === "pending_confirmation" ? "等待 Steam 手机确认" : "")
         )}</td>
       </tr>`).join("")
-    : '<tr><td colspan="7">暂无新上架任务</td></tr>';
+    : '<tr><td colspan="8">暂无新上架任务</td></tr>';
+  $("#select-all-plans").checked = false;
+  $("#select-all-plans").indeterminate = false;
   $("#price-review-body").innerHTML = priceReviews.length
     ? priceReviews.map((item) => `<tr>
         <td>${escapeHtml(item.market_hash_name)}</td>
@@ -421,6 +426,27 @@ $("#select-all-active").addEventListener("change", (event) => {
     checkbox.checked = event.target.checked;
   });
 });
+$("#select-all-plans").addEventListener("change", (event) => {
+  document.querySelectorAll(".plan-select:not(:disabled)").forEach((checkbox) => {
+    checkbox.checked = event.target.checked;
+  });
+});
+$("#new-listings-body").addEventListener("change", () => {
+  const checkboxes = Array.from(
+    document.querySelectorAll(".plan-select:not(:disabled)")
+  );
+  const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
+  $("#select-all-plans").checked = checkboxes.length > 0 && checked === checkboxes.length;
+  $("#select-all-plans").indeterminate = checked > 0 && checked < checkboxes.length;
+});
+$("#cancel-plans").addEventListener("click", () => busy($("#cancel-plans"), async () => {
+  const ids = Array.from(document.querySelectorAll(".plan-select:checked"))
+    .map((checkbox) => Number(checkbox.dataset.listingId));
+  if (!ids.length) throw new Error("请先选择需要取消的新上架任务");
+  await post("/api/listings/cancel", { listing_ids: ids });
+  toast(`已取消 ${ids.length} 条新上架任务`);
+  await load();
+}));
 $("#price-review-body").addEventListener("click", async (event) => {
   const button = event.target.closest(".review-choice");
   if (!button) return;
@@ -475,6 +501,9 @@ $("#create-plans").addEventListener("click", () => busy($("#create-plans"), asyn
   const selectedAssetids = Array.from(document.querySelectorAll(".inventory-select:checked"))
     .flatMap((checkbox) => groupedInventory[Number(checkbox.dataset.groupIndex)].assetids);
   if (!selectedAssetids.length) throw new Error("请先选择至少一项库存");
+  const status = $("#sync-status");
+  status.className = "sync-status";
+  status.textContent = "正在自动同步所选饰品的30天价格并生成计划…";
   const plans = await post("/api/listings/plan", {
     assetids: selectedAssetids,
     strategy_profile_id: Number($("#plan-strategy").value),
@@ -484,6 +513,8 @@ $("#create-plans").addEventListener("click", () => busy($("#create-plans"), asyn
     maximum_buyer_price_minor: Math.round(Number($("#maximum-price").value) * 100),
     maximum_items: Number($("#maximum-items").value),
   });
+  status.className = "sync-status success";
+  status.textContent = `价格同步与计划生成完成：${plans.length}条`;
   toast(`已生成 ${plans.length} 条上架计划`);
   await load();
 }));

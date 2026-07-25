@@ -25,12 +25,17 @@ from app.services.steam_market import SteamMarketService, steam_market_service
 EXECUTE_CONFIRMATION = "我确认执行真实市场操作"
 
 
-def _as_points(rows: list[sqlite3.Row]) -> list[PricePoint]:
+def _as_points(
+    rows: list[sqlite3.Row],
+    fee_options: dict[str, float | int] | None = None,
+) -> list[PricePoint]:
     return [
         PricePoint(
             timestamp=datetime.fromisoformat(str(row["timestamp"])),
             price_minor=(
-                seller_receive_for_buyer_pay(int(row["price_minor"]))
+                seller_receive_for_buyer_pay(
+                    int(row["price_minor"]), **(fee_options or {})
+                )
                 if int(row["price_minor"]) >= 3
                 else 1
             ),
@@ -48,6 +53,20 @@ class ListingManager:
     ) -> None:
         self.store = store or database
         self.market = market or steam_market_service
+
+    def fee_options(self) -> dict[str, float | int]:
+        session_service = getattr(self.market, "session", None)
+        status_method = getattr(session_service, "status", None)
+        if not callable(status_method):
+            return {}
+        status = status_method()
+        return {
+            "steam_fee_rate": status.wallet_fee_percent,
+            "steam_fee_minimum": status.wallet_fee_minimum,
+            "steam_fee_base": status.wallet_fee_base,
+            "publisher_fee_rate": status.wallet_publisher_fee_percent_default,
+            "publisher_fee_minimum": 1,
+        }
 
     def stages(
         self,
@@ -78,6 +97,7 @@ class ListingManager:
             stage.pricing_source,
             points,
             current_lowest_minor=current_lowest_minor,
+            fee_options=self.fee_options(),
         )
         median_decision = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
         adjusted = round(
@@ -94,7 +114,9 @@ class ListingManager:
             stage.absolute_floor_minor,
             median_floor,
         )
-        return seller_price, buyer_pays_for_seller_receive(seller_price)
+        return seller_price, buyer_pays_for_seller_receive(
+            seller_price, **self.fee_options()
+        )
 
     async def current_lowest_for_stage(
         self,
@@ -144,7 +166,8 @@ class ListingManager:
             points = _as_points(
                 self.store.prices(
                     int(asset["appid"]), str(asset["market_hash_name"]), currency.value
-                )
+                ),
+                self.fee_options(),
             )
             if not points:
                 missing_prices.add(str(asset["market_hash_name"]))
@@ -187,7 +210,9 @@ class ListingManager:
                     first_stage.absolute_floor_minor,
                     median_floor,
                 )
-                buyer_price = buyer_pays_for_seller_receive(seller_price)
+                buyer_price = buyer_pays_for_seller_receive(
+                    seller_price, **self.fee_options()
+                )
                 price_source = "age_reprice_reference"
                 reference_reprice_id = reference.id
                 price_difference_percent = (
@@ -282,7 +307,9 @@ class ListingManager:
                         reference.new_seller_price_minor,
                         record.minimum_receive_minor,
                     )
-                    buyer_price = buyer_pays_for_seller_receive(seller_price)
+                    buyer_price = buyer_pays_for_seller_receive(
+                        seller_price, **self.fee_options()
+                    )
                     strategy_buyer = record.strategy_buyer_price_minor or buyer_price
                     difference = abs(buyer_price - strategy_buyer) / strategy_buyer * 100
                     if difference > 20:
@@ -370,12 +397,16 @@ class ListingManager:
         elif choice == "custom":
             if custom_buyer_price_minor is None:
                 raise ValueError("请输入自定义买家支付价格")
-            seller_price = seller_receive_for_buyer_pay(custom_buyer_price_minor)
+            seller_price = seller_receive_for_buyer_pay(
+                custom_buyer_price_minor, **self.fee_options()
+            )
             self.store.update_listing(
                 record.id,
                 state=ListingState.PLANNED,
                 seller_price_minor=seller_price,
-                buyer_price_minor=buyer_pays_for_seller_receive(seller_price),
+                buyer_price_minor=buyer_pays_for_seller_receive(
+                    seller_price, **self.fee_options()
+                ),
                 price_source="custom_confirmed",
                 error_message=None,
             )
@@ -383,6 +414,26 @@ class ListingManager:
         if not updated:
             raise ValueError("任务更新失败")
         return updated
+
+    def cancel_new_listing_plans(self, listing_ids: list[int]) -> list[ListingRecord]:
+        cancelled: list[ListingRecord] = []
+        for listing_id in listing_ids:
+            record = self.store.listing(listing_id)
+            if not record or record.state not in {
+                ListingState.PLANNED,
+                ListingState.PRICE_REVIEW,
+                ListingState.FAILED,
+            }:
+                continue
+            self.store.update_listing(
+                record.id,
+                state=ListingState.CANCELLED,
+                error_message="用户取消任务",
+            )
+            updated = self.store.listing(record.id)
+            if updated:
+                cancelled.append(updated)
+        return cancelled
 
     async def reprice_active(
         self,
@@ -399,6 +450,8 @@ class ListingManager:
         first_stage = stages[0]
         resubmit_ids: list[int] = []
         batch_id = uuid.uuid4().hex
+        refreshed_items: set[tuple[int, str]] = set()
+        lowest_cache: dict[tuple[int, str], int | None] = {}
         for listing_id in listing_ids:
             record = self.store.listing(listing_id)
             if not record or record.state is not ListingState.ACTIVE:
@@ -416,22 +469,28 @@ class ListingManager:
                 )
                 continue
             try:
-                await self.market.update_price_history(
-                    record.appid, record.market_hash_name, currency
-                )
+                item_key = (record.appid, record.market_hash_name)
+                if item_key not in refreshed_items:
+                    await self.market.update_price_history(
+                        record.appid, record.market_hash_name, currency
+                    )
+                    refreshed_items.add(item_key)
                 points = _as_points(
                     self.store.prices(
                         record.appid, record.market_hash_name, currency.value
-                    )
+                    ),
+                    self.fee_options(),
                 )
                 if not points:
                     raise RuntimeError("没有可用的最近 30 天价格数据")
-                current_lowest = await self.current_lowest_for_stage(
-                    first_stage,
-                    record.appid,
-                    record.market_hash_name,
-                    currency,
-                )
+                if item_key not in lowest_cache:
+                    lowest_cache[item_key] = await self.current_lowest_for_stage(
+                        first_stage,
+                        record.appid,
+                        record.market_hash_name,
+                        currency,
+                    )
+                current_lowest = lowest_cache[item_key]
                 seller_price, buyer_price = self.stage_price(
                     first_stage,
                     points,
@@ -475,7 +534,7 @@ class ListingManager:
     async def sync_states(self) -> SyncResult:
         remote = await self.market.active_listings()
         recent_sales = await self.market.recent_sales()
-        imported = self.store.import_active_listings(remote)
+        imported = self.store.import_active_listings(remote, self.fee_options())
         reconciled = self.store.reconcile_pending_reprices()
         by_id = {str(item["listing_id"]): item for item in remote}
         unmatched = list(remote)
@@ -527,7 +586,7 @@ class ListingManager:
     async def refresh_current_listings(self) -> SyncResult:
         """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
         remote = await self.market.active_listings()
-        imported = self.store.import_active_listings(remote)
+        imported = self.store.import_active_listings(remote, self.fee_options())
         reconciled = self.store.reconcile_pending_reprices()
         return SyncResult(listings_updated=imported + reconciled)
 
@@ -556,7 +615,10 @@ class ListingManager:
             next_stage_index = record.stage + 1
             next_stage = stages[next_stage_index]
             points = _as_points(
-                self.store.prices(record.appid, record.market_hash_name, currency.value)
+                self.store.prices(
+                    record.appid, record.market_hash_name, currency.value
+                ),
+                self.fee_options(),
             )
             current_lowest = await self.current_lowest_for_stage(
                 next_stage,

@@ -16,9 +16,12 @@
 - IQR 异常价格清洗和成交量加权。
 - 稳健中位价、趋势价、市场跟随价、快速出售价。
 - 市场跟随与快速出售读取实时最低挂单；不可用时安全回退到 30 天历史价格。
+- 生成所选库存计划和调整当前在售前，自动同步对应饰品的 30 天价格。
 - CNY 人民币和 INR 印度卢比。
 - Steam 费用与游戏发行商费用的整数反算。
+- 从 Steam 钱包读取实际费率、最低手续费及固定基础费，避免低价饰品手续费计算错误。
 - 上架计划预览和同一资产幂等保护。
+- 新上架任务支持选择、全选和取消；等待手机确认的任务不会被本地直接取消。
 - 可出售库存按同名物品折叠，支持单选和全选后生成计划。
 - 持久化饰品黑名单；黑名单物品不参与库存展示、价格同步或新计划。
 - 独立设置界面，集中管理钱包币种、策略方案和黑名单。
@@ -159,6 +162,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 - `GET /api/inventory`
 - `POST /api/listings/plan`
 - `POST /api/listings/execute`
+- `POST /api/listings/cancel`
 - `POST /api/listings/reprice`
 - `POST /api/listings/{id}/resolve-price`
 - `GET /api/reprice-history`

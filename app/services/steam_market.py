@@ -595,6 +595,37 @@ class SteamMarketService:
                 await asyncio.sleep(settings.request_delay_seconds)
         return SyncResult(price_items_updated=updated, errors=errors)
 
+    async def sync_selected_prices(
+        self, assetids: list[str], currency: Currency
+    ) -> SyncResult:
+        selected_ids = {str(assetid) for assetid in assetids}
+        items = {
+            (int(item["appid"]), str(item["market_hash_name"]))
+            for item in self.store.inventory(marketable_only=True)
+            if str(item["assetid"]) in selected_ids
+        }
+        updated = 0
+        errors: list[str] = []
+        async with self.session.browser_context() as context:
+            for appid, market_hash_name in sorted(items):
+                try:
+                    await self.update_price_history(
+                        appid, market_hash_name, currency, context=context
+                    )
+                    updated += 1
+                except RuntimeError as exc:
+                    logger.warning(
+                        "Steam 选中饰品30天价格同步失败：appid=%s item=%s "
+                        "currency=%s error=%s",
+                        appid,
+                        market_hash_name,
+                        currency.value,
+                        exc,
+                    )
+                    errors.append(f"{market_hash_name}: {exc}")
+                await asyncio.sleep(settings.request_delay_seconds)
+        return SyncResult(price_items_updated=updated, errors=errors)
+
     async def current_lowest_price(
         self, appid: int, market_hash_name: str, currency: Currency
     ) -> int | None:

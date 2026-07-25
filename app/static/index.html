@@ -140,13 +140,14 @@
             <h2>新上架任务</h2>
           </div>
           <div class="actions">
+            <button id="cancel-plans" class="secondary" type="button">取消选择的任务</button>
             <button id="execute-plans" class="danger" type="button">执行所有待提交计划</button>
           </div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
-            <tbody id="new-listings-body"><tr><td colspan="7">暂无新上架任务</td></tr></tbody>
+            <thead><tr><th><input id="select-all-plans" type="checkbox" aria-label="全选可取消任务" /></th><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
+            <tbody id="new-listings-body"><tr><td colspan="8">暂无新上架任务</td></tr></tbody>
           </table>
         </div>
       </section>

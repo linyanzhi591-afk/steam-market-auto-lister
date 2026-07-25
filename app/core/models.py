@@ -113,6 +113,10 @@ class ListingExecuteRequest(BaseModel):
     confirmation_text: str
 
 
+class ListingCancelRequest(BaseModel):
+    listing_ids: list[int] = Field(min_length=1)
+
+
 class ListingRepriceRequest(BaseModel):
     listing_ids: list[int] = Field(min_length=1)
     strategy_profile_id: int | None = None
@@ -203,6 +207,10 @@ class SessionStatus(BaseModel):
     steam_id: str | None = None
     display_name: str | None = None
     wallet_currency: Currency | None = None
+    wallet_fee_percent: float = 0.05
+    wallet_fee_minimum: int = 1
+    wallet_fee_base: int = 0
+    wallet_publisher_fee_percent_default: float = 0.10
     message: str
 
 

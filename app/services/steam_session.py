@@ -82,14 +82,32 @@ class SteamSessionService:
         response = await page.goto(STEAM_MARKET_URL, wait_until="domcontentloaded", timeout=45_000)
         if response is None or response.status >= 400 or "/login/" in page.url:
             return None
-        wallet_currency_id = await page.evaluate(
-            "() => Number(window.g_rgWalletInfo?.wallet_currency || 0)"
+        wallet_info = await page.evaluate(
+            """
+            () => {
+              const wallet = window.g_rgWalletInfo || {};
+              return {
+                currency: Number(wallet.wallet_currency || 0),
+                feePercent: Number(wallet.wallet_fee_percent ?? 0.05),
+                feeMinimum: Number(wallet.wallet_fee_minimum ?? 1),
+                feeBase: Number(wallet.wallet_fee_base ?? 0),
+                publisherFee: Number(
+                  wallet.wallet_publisher_fee_percent_default ?? 0.10
+                )
+              };
+            }
+            """
         )
+        wallet_currency_id = int(wallet_info["currency"])
         wallet_currency = {23: Currency.CNY, 24: Currency.INR}.get(wallet_currency_id)
         return SessionStatus(
             state=SessionState.LOGGED_IN,
             steam_id=steam_id,
             wallet_currency=wallet_currency,
+            wallet_fee_percent=float(wallet_info["feePercent"]),
+            wallet_fee_minimum=int(wallet_info["feeMinimum"]),
+            wallet_fee_base=int(wallet_info["feeBase"]),
+            wallet_publisher_fee_percent_default=float(wallet_info["publisherFee"]),
             message="Steam 会话有效，下次启动将自动恢复",
         )
 

@@ -561,7 +561,11 @@ class Database:
             )
             return int(cursor.lastrowid)
 
-    def import_active_listings(self, remote: list[dict[str, object]]) -> int:
+    def import_active_listings(
+        self,
+        remote: list[dict[str, object]],
+        fee_options: dict[str, float | int] | None = None,
+    ) -> int:
         """将 Steam 中已有、但本地尚未记录的在售挂单导入任务表。"""
         profile = self.strategy_profile()
         first_stage = profile.stages[0]
@@ -603,7 +607,9 @@ class Database:
                 if buyer_price >= 3:
                     from app.services.pricing import seller_receive_for_buyer_pay
 
-                    seller_price = seller_receive_for_buyer_pay(buyer_price)
+                    seller_price = seller_receive_for_buyer_pay(
+                        buyer_price, **(fee_options or {})
+                    )
                 if existing:
                     db.execute(
                         """
