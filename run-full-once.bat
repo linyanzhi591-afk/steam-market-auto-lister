@@ -1,15 +1,21 @@
 @echo off
-chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" (
-  echo [错误] 未找到 .venv，请先按照 README 安装项目。
-  pause
-  exit /b 1
-)
-".venv\Scripts\python.exe" -m app.full_run
-if errorlevel 1 (
-  echo.
-  echo 运行中存在错误，窗口将保持打开。按任意键后才会关闭。
-  pause
-)
+set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
+
+if exist "%PYTHON_EXE%" goto run
+
+echo ERROR: .venv was not found in:
+echo %CD%
+echo Install the project dependencies according to README.md first.
+pause
+exit /b 1
+
+:run
+"%PYTHON_EXE%" -m app.full_run
+if not errorlevel 1 exit /b 0
+
+echo.
+echo Errors occurred during the full run. This window will remain open.
+pause
+exit /b 1
