@@ -12,20 +12,18 @@
         <div>
           <p class="eyebrow">LOCAL MARKET CONTROL</p>
           <h1>Steam 饰品自动上架</h1>
-          <p class="subtle">本机运行 · 手机手动确认 · 默认演练模式</p>
+          <p class="subtle">本机运行 · 手机手动确认</p>
         </div>
-        <span id="health" class="pill">正在检查服务</span>
+        <div class="header-actions">
+          <span id="health" class="pill">正在检查服务</span>
+          <button id="shutdown" class="danger" type="button">退出程序</button>
+        </div>
       </header>
 
       <nav class="view-tabs">
         <button class="view-tab active" type="button" data-view="main">库存与任务</button>
         <button class="view-tab secondary" type="button" data-view="settings">设置</button>
       </nav>
-
-      <section class="notice view-main">
-        <strong id="mode-label">演练模式。</strong>
-        默认禁止真实市场写入；启用真实操作需要同时修改两个环境变量并输入确认文本。
-      </section>
 
       <section class="grid view-main">
         <article class="card">

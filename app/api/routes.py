@@ -1,3 +1,6 @@
+import os
+import signal
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -34,6 +37,10 @@ from app.services.steam_session import steam_session_service
 router = APIRouter(prefix="/api")
 
 
+def _stop_process() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 @router.get("/health")
 def health() -> dict[str, object]:
     return {
@@ -41,6 +48,14 @@ def health() -> dict[str, object]:
         "dry_run": settings.dry_run,
         "market_writes": settings.allow_market_writes,
     }
+
+
+@router.post("/shutdown")
+def shutdown() -> dict[str, bool]:
+    timer = threading.Timer(0.5, _stop_process)
+    timer.daemon = True
+    timer.start()
+    return {"success": True}
 
 
 @router.get("/session", response_model=SessionStatus)

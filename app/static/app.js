@@ -294,7 +294,6 @@ async function load() {
       getJSON("/api/strategy-profiles"),
     ]);
     $("#health").textContent = health.status === "ok" ? "本地服务正常" : "服务异常";
-    $("#mode-label").textContent = dashboard.dry_run ? "演练模式。" : "真实市场模式已启用。";
     renderSession(session);
     $("#sellable").textContent = dashboard.sellable_items;
     $("#pending").textContent = dashboard.pending_confirmation;
@@ -337,6 +336,17 @@ $("#login").addEventListener("click", () => busy($("#login"), async () => {
 }));
 $("#logout").addEventListener("click", () => busy($("#logout"), async () => {
   renderSession((await post("/api/session/logout")).status);
+}));
+$("#shutdown").addEventListener("click", () => busy($("#shutdown"), async () => {
+  if (!window.confirm("确定退出程序？Steam 登录状态会保留，下次启动可自动登录。")) return;
+  await post("/api/shutdown");
+  document.body.innerHTML = `
+    <main class="shell shutdown-screen">
+      <h1>程序已退出</h1>
+      <p class="subtle">现在可以关闭此页面。</p>
+    </main>
+  `;
+  window.close();
 }));
 $("#sync-inventory").addEventListener("click", () => busy($("#sync-inventory"), async () => {
   const status = $("#sync-status");

@@ -14,6 +14,7 @@ h2 { margin: 4px 0 0; }
 .eyebrow { color: #66e0b7; margin: 0; letter-spacing: .14em; font-size: 12px; font-weight: 700; }
 .subtle, small { color: #84948e; }
 .pill { padding: 8px 12px; border-radius: 999px; background: #17231f; color: #66e0b7; }
+.header-actions { display: flex; align-items: center; gap: 10px; }
 .notice { margin: 34px 0 20px; padding: 16px 18px; border: 1px solid #554824; background: #28210f; border-radius: 14px; color: #e8d18e; }
 .view-tabs { display: flex; gap: 10px; margin-top: 28px; }
 .view-tab.active { color: #07110d; background: #66e0b7; }
