@@ -1,12 +1,16 @@
+import asyncio
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
+
+from playwright.async_api import Error as PlaywrightError
 
 from app.core.config import settings
 from app.core.database import Database, database
 from app.core.models import (
     AppSettings,
     Currency,
+    FullRunResult,
     ListingRecord,
     ListingState,
     PricePoint,
@@ -48,6 +52,7 @@ class ListingManager:
     ) -> None:
         self.store = store or database
         self.market = market or steam_market_service
+        self._full_run_lock = asyncio.Lock()
 
     def fee_options(self) -> dict[str, float | int]:
         session_service = getattr(self.market, "session", None)
@@ -775,6 +780,109 @@ class ListingManager:
         if resubmit_ids and settings.allow_market_writes and not settings.dry_run:
             await self.execute(resubmit_ids, EXECUTE_CONFIRMATION)
         return processed
+
+    async def full_run(self) -> FullRunResult:
+        if self._full_run_lock.locked():
+            return FullRunResult(errors=["已有一次完整运行正在进行"])
+        async with self._full_run_lock:
+            return await self._full_run_unlocked()
+
+    async def _full_run_unlocked(self) -> FullRunResult:
+        """执行一次完整同步、超时处理、计划生成和批量提交。"""
+        result = FullRunResult()
+        currency = self.store.settings().currency
+        try:
+            inventory = await self.market.scan_inventory()
+            result.inventory_count = inventory.inventory_count
+            result.marketable_count = inventory.marketable_count
+            result.errors.extend(
+                f"库存同步：{error}" for error in inventory.errors
+            )
+        except (OSError, PlaywrightError, RuntimeError) as exc:
+            result.errors.append(f"库存同步失败：{exc}")
+        try:
+            listings = await self.sync_states()
+            result.listings_updated = listings.listings_updated
+            result.errors.extend(
+                f"挂单同步：{error}" for error in listings.errors
+            )
+        except (OSError, PlaywrightError, RuntimeError) as exc:
+            result.errors.append(f"挂单同步失败：{exc}")
+        try:
+            result.expired_processed = await self.process_expired(currency)
+            for record in self.store.listings([ListingState.ACTIVE]):
+                if record.error_message:
+                    result.errors.append(
+                        f"超时挂单处理失败：{record.market_hash_name}："
+                        f"{record.error_message}"
+                    )
+        except (OSError, PlaywrightError, PermissionError, RuntimeError) as exc:
+            result.errors.append(f"超时处理失败：{exc}")
+
+        assetids = [
+            str(asset["assetid"])
+            for asset in self.store.inventory(marketable_only=True)
+        ]
+        if assetids:
+            try:
+                prices = await self.market.sync_selected_prices(
+                    assetids, currency
+                )
+                result.price_items_updated = prices.price_items_updated
+                result.errors.extend(
+                    f"价格同步：{error}" for error in prices.errors
+                )
+                profile = self.store.strategy_profile()
+                plans = await self.create_plans(
+                    profile.stages[0].pricing_source,
+                    currency,
+                    strategy_profile_id=profile.id,
+                    assetids=assetids,
+                    maximum_items=len(assetids),
+                )
+                result.plans_created = len(plans)
+                result.price_reviews = sum(
+                    plan.state is ListingState.PRICE_REVIEW for plan in plans
+                )
+                for plan in plans:
+                    if plan.state is ListingState.PRICE_REVIEW:
+                        result.errors.append(
+                            f"异常价格待确认：{plan.market_hash_name}，"
+                            f"上架价 {plan.buyer_price_minor / 100:.2f}"
+                        )
+            except (
+                OSError,
+                PlaywrightError,
+                PermissionError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                result.errors.append(f"生成上架计划失败：{exc}")
+
+        pending_ids = [
+            record.id
+            for record in self.store.listings(
+                [ListingState.PLANNED, ListingState.FAILED]
+            )
+        ]
+        if pending_ids:
+            try:
+                submitted = await self.execute(
+                    pending_ids, EXECUTE_CONFIRMATION
+                )
+                result.listings_submitted = sum(
+                    record.state is ListingState.PENDING_CONFIRMATION
+                    for record in submitted
+                )
+                for record in submitted:
+                    if record.state is ListingState.FAILED:
+                        result.errors.append(
+                            f"上架失败：{record.market_hash_name}："
+                            f"{record.error_message or '未知错误'}"
+                        )
+            except (PermissionError, RuntimeError) as exc:
+                result.errors.append(f"执行上架计划失败：{exc}")
+        return result
 
 
 listing_manager = ListingManager()

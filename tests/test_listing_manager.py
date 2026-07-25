@@ -4,12 +4,14 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.models import (
+    AppSettings,
     Currency,
     PricePoint,
     PricingStrategy,
     SessionState,
     SessionStatus,
     StrategyStage,
+    SyncResult,
 )
 from app.services.listing_manager import ListingManager, _as_points
 
@@ -132,3 +134,33 @@ def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:
     options = ListingManager(store=object(), market=Market()).fee_options()
     assert options["steam_fee_minimum"] == 1
     assert options["minimum_total_fee"] == 200
+
+
+def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
+    class Store:
+        def settings(self) -> AppSettings:
+            return AppSettings()
+
+        def inventory(self, *, marketable_only: bool = False):
+            assert marketable_only is True
+            return []
+
+        def listings(self, _states):
+            return []
+
+    class Market:
+        async def scan_inventory(self) -> SyncResult:
+            return SyncResult(inventory_count=2, marketable_count=0)
+
+    class Manager(ListingManager):
+        async def sync_states(self) -> SyncResult:
+            return SyncResult(listings_updated=3)
+
+        async def process_expired(self, _currency: Currency) -> int:
+            return 1
+
+    result = asyncio.run(Manager(store=Store(), market=Market()).full_run())
+    assert result.inventory_count == 2
+    assert result.listings_updated == 3
+    assert result.expired_processed == 1
+    assert result.errors == []

@@ -159,6 +159,18 @@ class SyncResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class FullRunResult(BaseModel):
+    inventory_count: int = 0
+    marketable_count: int = 0
+    listings_updated: int = 0
+    expired_processed: int = 0
+    price_items_updated: int = 0
+    plans_created: int = 0
+    price_reviews: int = 0
+    listings_submitted: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class BlacklistEntry(BaseModel):
     appid: int
     market_hash_name: str

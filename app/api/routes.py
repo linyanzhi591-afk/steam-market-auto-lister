@@ -15,6 +15,7 @@ from app.core.models import (
     BlacklistRequest,
     Currency,
     DashboardSummary,
+    FullRunResult,
     ListingCancelRequest,
     ListingExecuteRequest,
     ListingPlanRequest,
@@ -305,6 +306,11 @@ async def process_expired(currency: Currency = Currency.CNY) -> dict[str, int]:
         return {"processed": await listing_manager.process_expired(currency)}
     except (PermissionError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/full-run", response_model=FullRunResult)
+async def full_run() -> FullRunResult:
+    return await listing_manager.full_run()
 
 
 @router.get("/strategies")

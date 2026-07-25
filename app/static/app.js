@@ -450,6 +450,22 @@ $("#sync-data").addEventListener("click", () => busy($("#sync-data"), async () =
     throw error;
   }
 }));
+$("#full-run").addEventListener("click", () => busy($("#full-run"), async () => {
+  const status = $("#sync-status");
+  status.className = "sync-status";
+  status.textContent = "正在完整运行：同步数据、检查超时、生成并执行上架计划…";
+  const result = await post("/api/full-run");
+  await load();
+  if (result.errors.length) {
+    status.className = "sync-status error";
+    status.textContent = `完整运行结束，发现 ${result.errors.length} 个问题：${result.errors.join("；")}`;
+    toast(`完整运行结束，发现 ${result.errors.length} 个问题`);
+    return;
+  }
+  status.className = "sync-status success";
+  status.textContent = `完整运行完成：${result.marketable_count}件可出售，处理${result.expired_processed}条超时挂单，生成${result.plans_created}条计划，提交${result.listings_submitted}条`;
+  toast("完整运行成功");
+}));
 $("#sync-prices").addEventListener("click", () => busy($("#sync-prices"), async () => {
   const status = $("#sync-status");
   status.className = "sync-status";
