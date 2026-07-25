@@ -215,13 +215,13 @@ class Database:
                         name="趋势试探",
                         pricing_source=PricingStrategy.TREND,
                         maximum_drop_percent=5,
-                        duration_hours=72,
+                        duration_hours=48,
                     ),
                     StrategyStage(
                         name="稳健出售",
                         pricing_source=PricingStrategy.ROBUST_MEDIAN,
                         maximum_drop_percent=5,
-                        duration_hours=48,
+                        duration_hours=72,
                     ),
                     StrategyStage(
                         name="跟随市场",
@@ -254,7 +254,7 @@ class Database:
                     ),
                 )
             for row in db.execute(
-                "SELECT id, stages_json FROM strategy_profiles"
+                "SELECT id, name, is_default, stages_json FROM strategy_profiles"
             ).fetchall():
                 stages = json.loads(row["stages_json"])
                 changed = False
@@ -265,6 +265,21 @@ class Database:
                             30 if source == PricingStrategy.FAST_SELL.value else 5
                         )
                         changed = True
+                    if row["name"] == "默认阶梯策略" and row["is_default"]:
+                        if (
+                            stage.get("pricing_source")
+                            == PricingStrategy.TREND.value
+                            and stage.get("duration_hours") == 72
+                        ):
+                            stage["duration_hours"] = 48
+                            changed = True
+                        elif (
+                            stage.get("pricing_source")
+                            == PricingStrategy.ROBUST_MEDIAN.value
+                            and stage.get("duration_hours") == 48
+                        ):
+                            stage["duration_hours"] = 72
+                            changed = True
                 if changed:
                     db.execute(
                         "UPDATE strategy_profiles SET stages_json = ? WHERE id = ?",

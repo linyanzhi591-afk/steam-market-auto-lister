@@ -80,7 +80,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 打开 <http://127.0.0.1:8765>，依次执行：
 
 1. 点击“登录 Steam”，在弹出的 Steam 官方窗口登录。
-2. 点击“同步库存”。
+2. 点击“同步数据”，一次刷新可出售库存、待手机确认任务和 Steam 当前在售。
 3. 点击“同步30天价格”。
 4. 勾选需要出售的库存，可使用表头复选框全选。
 5. 选择策略方案和最低上架价格。
@@ -106,7 +106,7 @@ $env:STEAM_LISTER_ALLOW_MARKET_WRITES = "true"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-点击“执行所有待提交计划”后会直接提交全部待提交及失败任务，不再弹出确认输入框。程序提交成功后，前往 Steam 手机客户端手动确认。建议第一次只选择一件低价值饰品，不要直接批量提交。
+“处理选择的任务”只提交勾选的新上架任务；“执行所有待提交计划”提交全部待提交及失败任务。两者都不再弹出确认输入框。任务区的“同步任务状态”可单独刷新手机确认和在售状态。程序提交成功后，仍需前往 Steam 手机客户端手动确认。
 
 ## 自定义重定价策略
 
@@ -125,8 +125,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 | 阶段 | 策略 | 在售时间 |
 |---|---|---:|
-| 1 | 受保护趋势价，最大降幅5% | 72 小时 |
-| 2 | 时间加权稳健价，最大降幅5% | 48 小时 |
+| 1 | 受保护趋势价，最大降幅5% | 48 小时 |
+| 2 | 时间加权稳健价，最大降幅5% | 72 小时 |
 | 3 | 市场跟随价，最大降幅5% | 24 小时 |
 | 4 | 快速出售价，最大降幅30% | 24 小时 |
 
@@ -167,6 +167,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 - `POST /api/session/login`
 - `POST /api/sync/inventory`
+- `POST /api/sync/data`
 - `POST /api/sync/prices?currency=CNY`
 - `GET /api/inventory`
 - `POST /api/listings/plan`

@@ -150,6 +150,30 @@ async def sync_inventory() -> SyncResult:
         raise HTTPException(status_code=503, detail=f"Steam 库存同步失败：{exc}") from exc
 
 
+@router.post("/sync/data", response_model=SyncResult)
+async def sync_data() -> SyncResult:
+    """一次刷新库存、待确认任务和 Steam 当前在售。"""
+    errors: list[str] = []
+    inventory_result = SyncResult()
+    listing_result = SyncResult()
+    try:
+        inventory_result = await steam_market_service.scan_inventory()
+        errors.extend(inventory_result.errors)
+    except (PlaywrightError, OSError, RuntimeError) as exc:
+        errors.append(f"库存同步失败：{exc}")
+    try:
+        listing_result = await listing_manager.sync_states()
+        errors.extend(listing_result.errors)
+    except (PlaywrightError, OSError, RuntimeError) as exc:
+        errors.append(f"挂单状态同步失败：{exc}")
+    return SyncResult(
+        inventory_count=inventory_result.inventory_count,
+        marketable_count=inventory_result.marketable_count,
+        listings_updated=listing_result.listings_updated,
+        errors=errors,
+    )
+
+
 @router.post("/sync/prices", response_model=SyncResult)
 async def sync_prices(currency: Currency = Currency.CNY) -> SyncResult:
     try:

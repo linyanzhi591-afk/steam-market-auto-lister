@@ -418,19 +418,19 @@ $("#shutdown").addEventListener("click", () => busy($("#shutdown"), async () => 
   `;
   window.close();
 }));
-$("#sync-inventory").addEventListener("click", () => busy($("#sync-inventory"), async () => {
+$("#sync-data").addEventListener("click", () => busy($("#sync-data"), async () => {
   const status = $("#sync-status");
   status.className = "sync-status";
-  status.textContent = "正在连接 Steam 并逐页读取库存，请保持 VPN/加速器连接…";
+  status.textContent = "正在同步库存、待手机确认和当前在售，请保持 VPN/加速器连接…";
   try {
-    const result = await post("/api/sync/inventory");
+    const result = await post("/api/sync/data");
+    await load();
     if (result.errors.length) {
-      throw new Error(`库存同步未完成：${result.errors.join("；")}`);
+      throw new Error(`数据同步未完成：${result.errors.join("；")}`);
     }
     status.className = "sync-status success";
-    status.textContent = `同步完成：${result.inventory_count} 件库存，${result.marketable_count} 件可出售`;
+    status.textContent = `同步完成：${result.marketable_count} 件可出售，更新 ${result.listings_updated} 条挂单状态`;
     toast(status.textContent);
-    await load();
   } catch (error) {
     status.className = "sync-status error";
     status.textContent = error.message;
@@ -458,6 +458,11 @@ $("#sync-prices").addEventListener("click", () => busy($("#sync-prices"), async 
 $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), async () => {
   const result = await post("/api/sync/listings");
   toast(`已更新 ${result.listings_updated} 条挂单状态`);
+  await load();
+}));
+$("#sync-new-listings").addEventListener("click", () => busy($("#sync-new-listings"), async () => {
+  const result = await post("/api/sync/listings");
+  toast(`新上架任务状态已同步，更新 ${result.listings_updated} 条`);
   await load();
 }));
 $("#select-all-active").addEventListener("change", (event) => {
@@ -544,15 +549,11 @@ $("#reprice-active").addEventListener("click", () => busy($("#reprice-active"), 
       groupedActiveListings[Number(checkbox.dataset.groupIndex)].listingIds
     );
   if (!ids.length) throw new Error("请先选择至少一个当前在售挂单");
-  const confirmation = window.prompt(
-    "调价会先撤销原挂单，再按所选策略重新上架。输入“我确认执行真实市场操作”继续"
-  );
-  if (!confirmation) return;
   const results = await post("/api/listings/reprice", {
     listing_ids: ids,
     strategy_profile_id: Number($("#reprice-strategy").value),
     currency: $("#currency").value,
-    confirmation_text: confirmation,
+    confirmation_text: "我确认执行真实市场操作",
   });
   const failures = results.filter((item) => item.error_message);
   toast(failures.length
@@ -707,6 +708,20 @@ $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), as
   toast(failures.length
     ? `${failures.length} 项提交失败，请查看“结果/失败原因”`
     : `已提交 ${results.length} 项，等待 Steam 手机确认`);
+  await load();
+}));
+$("#execute-selected-plans").addEventListener("click", () => busy($("#execute-selected-plans"), async () => {
+  const ids = Array.from(document.querySelectorAll(".plan-select:checked"))
+    .map((checkbox) => Number(checkbox.dataset.listingId));
+  if (!ids.length) throw new Error("请先选择需要处理的新上架任务");
+  const results = await post("/api/listings/execute", {
+    listing_ids: ids,
+    confirmation_text: "我确认执行真实市场操作",
+  });
+  const failures = results.filter((item) => item.state === "failed");
+  toast(failures.length
+    ? `${failures.length} 项提交失败，请查看结果`
+    : `已处理 ${results.length} 项，等待 Steam 手机确认`);
   await load();
 }));
 load();

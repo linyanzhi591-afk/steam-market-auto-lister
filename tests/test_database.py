@@ -143,6 +143,10 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
 def test_strategy_profiles_can_be_created_and_made_default(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     original = database.strategy_profile()
+    assert original.stages[0].pricing_source is PricingStrategy.TREND
+    assert original.stages[0].duration_hours == 48
+    assert original.stages[1].pricing_source is PricingStrategy.ROBUST_MEDIAN
+    assert original.stages[1].duration_hours == 72
     created = database.save_strategy_profile(
         StrategyProfileInput(
             name="快速测试",
