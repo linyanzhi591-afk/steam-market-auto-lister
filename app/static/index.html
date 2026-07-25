@@ -141,6 +141,7 @@
           </div>
           <div class="actions">
             <button id="sync-new-listings" class="secondary" type="button">同步任务状态</button>
+            <button id="toggle-all-plans" class="secondary" type="button">全选未提交任务</button>
             <button id="cancel-plans" class="secondary" type="button">取消选择的任务</button>
             <button id="execute-selected-plans" type="button">处理选择的任务</button>
             <button id="execute-plans" class="danger" type="button">执行所有待提交计划</button>
@@ -150,6 +151,22 @@
           <table>
             <thead><tr><th><input id="select-all-plans" type="checkbox" aria-label="全选可取消任务" /></th><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>上架价</th><th>结果/失败原因</th></tr></thead>
             <tbody id="new-listings-body"><tr><td colspan="8">暂无新上架任务</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel view-main">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">MOBILE CONFIRMATIONS</p>
+            <h2>等待 Steam 手机确认</h2>
+          </div>
+          <span class="subtle">这些任务已经提交 Steam，不属于未提交的新上架任务</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>上架价</th><th>提交时间</th><th>结果</th></tr></thead>
+            <tbody id="pending-confirmations-body"><tr><td colspan="6">暂无等待手机确认的任务</td></tr></tbody>
           </table>
         </div>
       </section>

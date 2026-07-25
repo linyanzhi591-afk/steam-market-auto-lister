@@ -266,7 +266,10 @@ function renderListings(items, blacklist) {
   );
   const priceReviews = items.filter((item) => item.state === "price_review");
   const newListings = items.filter((item) =>
-    ["planned", "pending_confirmation", "failed"].includes(item.state)
+    ["planned", "failed"].includes(item.state)
+  );
+  const pendingConfirmations = items.filter(
+    (item) => item.state === "pending_confirmation"
   );
   const activeListings = items.filter((item) => item.state === "active");
   groupedActiveListings = Array.from(activeListings.reduce((groups, item) => {
@@ -297,18 +300,28 @@ function renderListings(items, blacklist) {
   $("#new-listings-body").innerHTML = newListings.length
     ? newListings.map((item) => `<tr>
         <td><input class="plan-select" type="checkbox" data-listing-id="${item.id}"
-          ${["planned", "failed"].includes(item.state) ? "" : "disabled"}
           aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
         <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
         <td>${money(item.buyer_price_minor)}</td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
-          item.error_message || (item.state === "pending_confirmation" ? "等待 Steam 手机确认" : "")
+          item.error_message || ""
         )}</td>
       </tr>`).join("")
     : '<tr><td colspan="7">暂无新上架任务</td></tr>';
   $("#select-all-plans").checked = false;
   $("#select-all-plans").indeterminate = false;
+  $("#toggle-all-plans").textContent = "全选未提交任务";
+  $("#pending-confirmations-body").innerHTML = pendingConfirmations.length
+    ? pendingConfirmations.map((item) => `<tr>
+        <td>${item.state}</td>
+        <td>${escapeHtml(item.market_hash_name)}</td>
+        <td>${item.strategy}</td>
+        <td>${money(item.buyer_price_minor)}</td>
+        <td>${displaySteamTime(item.updated_at)}</td>
+        <td>${escapeHtml(item.error_message || "等待 Steam 手机确认")}</td>
+      </tr>`).join("")
+    : '<tr><td colspan="6">暂无等待手机确认的任务</td></tr>';
   $("#price-review-body").innerHTML = priceReviews.length
     ? priceReviews.map((item) => `<tr>
         <td>${escapeHtml(item.market_hash_name)}</td>
@@ -474,14 +487,34 @@ $("#select-all-plans").addEventListener("change", (event) => {
   document.querySelectorAll(".plan-select:not(:disabled)").forEach((checkbox) => {
     checkbox.checked = event.target.checked;
   });
+  updatePlanSelectionState();
 });
-$("#new-listings-body").addEventListener("change", () => {
-  const checkboxes = Array.from(
-    document.querySelectorAll(".plan-select:not(:disabled)")
-  );
+$("#toggle-all-plans").addEventListener("click", () => {
+  const checkboxes = Array.from(document.querySelectorAll(".plan-select"));
+  if (!checkboxes.length) {
+    toast("当前没有未提交的新上架任务");
+    return;
+  }
+  const shouldSelect = checkboxes.some((checkbox) => !checkbox.checked);
+  checkboxes.forEach((checkbox) => {
+    checkbox.checked = shouldSelect;
+  });
+  updatePlanSelectionState();
+});
+function updatePlanSelectionState() {
+  const checkboxes = Array.from(document.querySelectorAll(".plan-select"));
   const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
-  $("#select-all-plans").checked = checkboxes.length > 0 && checked === checkboxes.length;
-  $("#select-all-plans").indeterminate = checked > 0 && checked < checkboxes.length;
+  $("#select-all-plans").checked =
+    checkboxes.length > 0 && checked === checkboxes.length;
+  $("#select-all-plans").indeterminate =
+    checked > 0 && checked < checkboxes.length;
+  $("#toggle-all-plans").textContent =
+    checkboxes.length > 0 && checked === checkboxes.length
+      ? "取消全选未提交任务"
+      : "全选未提交任务";
+}
+$("#new-listings-body").addEventListener("change", () => {
+  updatePlanSelectionState();
 });
 $("#cancel-plans").addEventListener("click", () => busy($("#cancel-plans"), async () => {
   const ids = Array.from(document.querySelectorAll(".plan-select:checked"))
