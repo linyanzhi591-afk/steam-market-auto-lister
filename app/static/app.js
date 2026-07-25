@@ -555,11 +555,9 @@ $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), as
     .filter((item) => ["planned", "failed"].includes(item.state))
     .map((item) => item.id);
   if (!ids.length) throw new Error("没有待提交计划");
-  const confirmation = window.prompt("输入“我确认执行真实市场操作”以提交所有计划；提交后仍需手机确认");
-  if (!confirmation) return;
   const results = await post("/api/listings/execute", {
     listing_ids: ids,
-    confirmation_text: confirmation,
+    confirmation_text: "我确认执行真实市场操作",
   });
   const failures = results.filter((item) => item.state === "failed");
   toast(failures.length
