@@ -159,8 +159,23 @@ def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
         async def process_expired(self, _currency: Currency) -> int:
             return 1
 
-    result = asyncio.run(Manager(store=Store(), market=Market()).full_run())
+    progress: list[str] = []
+    result = asyncio.run(
+        Manager(store=Store(), market=Market()).full_run(progress.append)
+    )
     assert result.inventory_count == 2
     assert result.listings_updated == 3
     assert result.expired_processed == 1
     assert result.errors == []
+    assert progress == [
+        "[1/4] 开始同步库存",
+        "[1/4] 库存同步完成：共 2 件，可出售 0 件",
+        "[1/4] 开始同步 Steam 当前在售和待确认状态",
+        "[1/4] 挂单状态同步完成：更新 3 条",
+        "[2/4] 开始检查全部非黑名单超时挂单",
+        "[2/4] 超时检查完成：处理 1 条挂单",
+        "[3/4] 开始同步 0 件可出售库存的30天价格并生成计划",
+        "[3/4] 没有可出售库存，跳过价格同步和计划生成",
+        "[4/4] 开始执行 0 条待提交计划",
+        "[4/4] 没有待提交计划，已跳过",
+    ]

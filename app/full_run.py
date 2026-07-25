@@ -17,11 +17,7 @@ async def run_once() -> int:
     if session.wallet_currency:
         database.save_currency(session.wallet_currency)
 
-    print("[1/4] 同步库存与 Steam 当前挂单")
-    print("[2/4] 检查全部非黑名单超时挂单")
-    print("[3/4] 为全部非黑名单可出售库存生成计划")
-    print("[4/4] 执行全部正常待提交计划")
-    result = await listing_manager.full_run()
+    result = await listing_manager.full_run(progress=print)
     print(
         "运行结果："
         f"库存 {result.inventory_count}，可出售 {result.marketable_count}，"

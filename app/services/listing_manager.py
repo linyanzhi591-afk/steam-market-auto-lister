@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from playwright.async_api import Error as PlaywrightError
@@ -781,35 +782,55 @@ class ListingManager:
             await self.execute(resubmit_ids, EXECUTE_CONFIRMATION)
         return processed
 
-    async def full_run(self) -> FullRunResult:
+    async def full_run(
+        self, progress: Callable[[str], None] | None = None
+    ) -> FullRunResult:
         if self._full_run_lock.locked():
             return FullRunResult(errors=["已有一次完整运行正在进行"])
         async with self._full_run_lock:
-            return await self._full_run_unlocked()
+            return await self._full_run_unlocked(progress)
 
-    async def _full_run_unlocked(self) -> FullRunResult:
+    async def _full_run_unlocked(
+        self, progress: Callable[[str], None] | None = None
+    ) -> FullRunResult:
         """执行一次完整同步、超时处理、计划生成和批量提交。"""
         result = FullRunResult()
         currency = self.store.settings().currency
+        report = progress or (lambda _message: None)
+        report("[1/4] 开始同步库存")
         try:
             inventory = await self.market.scan_inventory()
             result.inventory_count = inventory.inventory_count
             result.marketable_count = inventory.marketable_count
+            report(
+                f"[1/4] 库存同步完成：共 {result.inventory_count} 件，"
+                f"可出售 {result.marketable_count} 件"
+            )
             result.errors.extend(
                 f"库存同步：{error}" for error in inventory.errors
             )
         except (OSError, PlaywrightError, RuntimeError) as exc:
             result.errors.append(f"库存同步失败：{exc}")
+            report(f"[1/4] 库存同步失败：{exc}")
+        report("[1/4] 开始同步 Steam 当前在售和待确认状态")
         try:
             listings = await self.sync_states()
             result.listings_updated = listings.listings_updated
+            report(
+                f"[1/4] 挂单状态同步完成：更新 {result.listings_updated} 条"
+            )
             result.errors.extend(
                 f"挂单同步：{error}" for error in listings.errors
             )
         except (OSError, PlaywrightError, RuntimeError) as exc:
             result.errors.append(f"挂单同步失败：{exc}")
+            report(f"[1/4] 挂单同步失败：{exc}")
+        report("[2/4] 开始检查全部非黑名单超时挂单")
         try:
             result.expired_processed = await self.process_expired(currency)
+            report(
+                f"[2/4] 超时检查完成：处理 {result.expired_processed} 条挂单"
+            )
             for record in self.store.listings([ListingState.ACTIVE]):
                 if record.error_message:
                     result.errors.append(
@@ -818,17 +839,24 @@ class ListingManager:
                     )
         except (OSError, PlaywrightError, PermissionError, RuntimeError) as exc:
             result.errors.append(f"超时处理失败：{exc}")
+            report(f"[2/4] 超时处理失败：{exc}")
 
         assetids = [
             str(asset["assetid"])
             for asset in self.store.inventory(marketable_only=True)
         ]
+        report(
+            f"[3/4] 开始同步 {len(assetids)} 件可出售库存的30天价格并生成计划"
+        )
         if assetids:
             try:
                 prices = await self.market.sync_selected_prices(
                     assetids, currency
                 )
                 result.price_items_updated = prices.price_items_updated
+                report(
+                    f"[3/4] 价格同步完成：更新 {result.price_items_updated} 种饰品"
+                )
                 result.errors.extend(
                     f"价格同步：{error}" for error in prices.errors
                 )
@@ -844,6 +872,11 @@ class ListingManager:
                 result.price_reviews = sum(
                     plan.state is ListingState.PRICE_REVIEW for plan in plans
                 )
+                report(
+                    f"[3/4] 计划生成完成：正常/总计 "
+                    f"{result.plans_created - result.price_reviews}/"
+                    f"{result.plans_created}，异常价格 {result.price_reviews} 条"
+                )
                 for plan in plans:
                     if plan.state is ListingState.PRICE_REVIEW:
                         result.errors.append(
@@ -858,6 +891,9 @@ class ListingManager:
                 ValueError,
             ) as exc:
                 result.errors.append(f"生成上架计划失败：{exc}")
+                report(f"[3/4] 生成上架计划失败：{exc}")
+        else:
+            report("[3/4] 没有可出售库存，跳过价格同步和计划生成")
 
         pending_ids = [
             record.id
@@ -865,6 +901,7 @@ class ListingManager:
                 [ListingState.PLANNED, ListingState.FAILED]
             )
         ]
+        report(f"[4/4] 开始执行 {len(pending_ids)} 条待提交计划")
         if pending_ids:
             try:
                 submitted = await self.execute(
@@ -874,6 +911,9 @@ class ListingManager:
                     record.state is ListingState.PENDING_CONFIRMATION
                     for record in submitted
                 )
+                report(
+                    f"[4/4] 提交完成：{result.listings_submitted} 条等待手机确认"
+                )
                 for record in submitted:
                     if record.state is ListingState.FAILED:
                         result.errors.append(
@@ -882,6 +922,9 @@ class ListingManager:
                         )
             except (PermissionError, RuntimeError) as exc:
                 result.errors.append(f"执行上架计划失败：{exc}")
+                report(f"[4/4] 执行上架计划失败：{exc}")
+        else:
+            report("[4/4] 没有待提交计划，已跳过")
         return result
 
 

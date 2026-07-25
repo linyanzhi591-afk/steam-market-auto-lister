@@ -13,9 +13,14 @@ exit /b 1
 
 :run
 "%PYTHON_EXE%" -m app.full_run
-if not errorlevel 1 exit /b 0
+set "RUN_EXIT_CODE=%ERRORLEVEL%"
 
 echo.
-echo Errors occurred during the full run. This window will remain open.
+if "%RUN_EXIT_CODE%"=="0" (
+  echo Full run finished successfully. The program has exited.
+) else (
+  echo Full run finished with errors. Review the output above.
+)
+echo Press any key to close this window.
 pause
-exit /b 1
+exit /b %RUN_EXIT_CODE%
