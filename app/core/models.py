@@ -142,6 +142,8 @@ class RepriceHistory(BaseModel):
     old_buyer_price_minor: int
     new_seller_price_minor: int
     new_buyer_price_minor: int
+    new_stage: int = 0
+    strategy_profile_id: int | None = None
     reason: str
     status: str
     submitted_at: datetime

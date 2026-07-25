@@ -473,6 +473,16 @@ $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), as
   toast(`已更新 ${result.listings_updated} 条挂单状态`);
   await load();
 }));
+$("#check-expired-listings").addEventListener("click", () => busy($("#check-expired-listings"), async () => {
+  await post("/api/sync/listings");
+  const result = await post(
+    `/api/listings/process-expired?currency=${$("#currency").value}`
+  );
+  toast(result.processed
+    ? `已处理 ${result.processed} 条超时挂单，等待 Steam 手机确认`
+    : "检查完成，没有需要处理的超时挂单");
+  await load();
+}));
 $("#sync-new-listings").addEventListener("click", () => busy($("#sync-new-listings"), async () => {
   const result = await post("/api/sync/listings");
   toast(`新上架任务状态已同步，更新 ${result.listings_updated} 条`);

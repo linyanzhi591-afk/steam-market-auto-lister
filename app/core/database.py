@@ -146,6 +146,8 @@ class Database:
                     old_buyer_price_minor INTEGER NOT NULL,
                     new_seller_price_minor INTEGER NOT NULL,
                     new_buyer_price_minor INTEGER NOT NULL,
+                    new_stage INTEGER NOT NULL DEFAULT 0,
+                    strategy_profile_id INTEGER,
                     reason TEXT NOT NULL,
                     status TEXT NOT NULL,
                     submitted_at TEXT NOT NULL,
@@ -197,6 +199,18 @@ class Database:
             for name, definition in listing_migrations.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE listings ADD COLUMN {name} {definition}")
+            reprice_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(reprice_history)").fetchall()
+            }
+            if "new_stage" not in reprice_columns:
+                db.execute(
+                    "ALTER TABLE reprice_history ADD COLUMN new_stage INTEGER NOT NULL DEFAULT 0"
+                )
+            if "strategy_profile_id" not in reprice_columns:
+                db.execute(
+                    "ALTER TABLE reprice_history ADD COLUMN strategy_profile_id INTEGER"
+                )
             db.execute("DROP INDEX IF EXISTS idx_one_open_listing_per_asset")
             db.execute(
                 """
@@ -621,9 +635,8 @@ class Database:
     ) -> int:
         """将 Steam 中已有、但本地尚未记录的在售挂单导入任务表。"""
         profile = self.strategy_profile()
-        first_stage = profile.stages[0]
+        profiles = {item.id: item for item in self.strategy_profiles()}
         now = datetime.now(UTC)
-        next_action = now + timedelta(hours=first_stage.duration_hours)
         imported = 0
         with self.connect() as db:
             for item in remote:
@@ -668,6 +681,39 @@ class Database:
                     seller_price = seller_receive_for_buyer_pay(
                         buyer_price, **fee_values
                     )
+                history = db.execute(
+                    """
+                    SELECT new_stage, strategy_profile_id
+                    FROM reprice_history
+                    WHERE appid = ? AND market_hash_name = ? AND assetid = ?
+                      AND new_buyer_price_minor = ?
+                      AND status IN ('confirmed', 'waiting_confirmation')
+                    ORDER BY COALESCE(confirmed_at, submitted_at) DESC
+                    LIMIT 1
+                    """,
+                    (appid, market_hash_name, assetid, buyer_price),
+                ).fetchone()
+                active_profile = (
+                    profiles.get(history["strategy_profile_id"])
+                    if history and history["strategy_profile_id"] is not None
+                    else None
+                ) or profile
+                stage_index = min(
+                    int(history["new_stage"]) if history else 0,
+                    len(active_profile.stages) - 1,
+                )
+                active_stage = active_profile.stages[stage_index]
+                listed_at = str(item.get("listed_at") or "")
+                try:
+                    listed_datetime = datetime.fromisoformat(listed_at)
+                    if listed_datetime.tzinfo is None:
+                        listed_datetime = listed_datetime.replace(tzinfo=UTC)
+                    listed_datetime = listed_datetime.astimezone(UTC)
+                except ValueError:
+                    listed_datetime = now
+                next_action = listed_datetime + timedelta(
+                    hours=active_stage.duration_hours
+                )
                 if existing:
                     db.execute(
                         """
@@ -713,7 +759,7 @@ class Database:
                             minimum_buyer_price_minor, steam_listing_id,
                             steam_listed_at, active_since, next_action_at,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             assetid,
@@ -721,14 +767,15 @@ class Database:
                             contextid,
                             market_hash_name,
                             ListingState.ACTIVE.value,
-                            first_stage.pricing_source.value,
-                            profile.id,
+                            active_stage.pricing_source.value,
+                            active_profile.id,
+                            stage_index,
                             seller_price,
                             max(buyer_price, seller_price),
                             minimum_buyer_price,
                             steam_listing_id,
-                            str(item.get("listed_at") or "") or None,
-                            now.isoformat(),
+                            listed_at or None,
+                            listed_datetime.isoformat(),
                             next_action.isoformat(),
                             now.isoformat(),
                             now.isoformat(),
@@ -808,6 +855,8 @@ class Database:
         new_seller_price_minor: int,
         new_buyer_price_minor: int,
         reason: str,
+        new_stage: int = 0,
+        strategy_profile_id: int | None = None,
     ) -> int:
         if not record.steam_listing_id:
             raise ValueError("原挂单缺少 Steam Listing ID")
@@ -818,8 +867,9 @@ class Database:
                     batch_id, listing_record_id, appid, market_hash_name, assetid,
                     old_steam_listing_id, old_seller_price_minor,
                     old_buyer_price_minor, new_seller_price_minor,
-                    new_buyer_price_minor, reason, status, submitted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?)
+                    new_buyer_price_minor, new_stage, strategy_profile_id,
+                    reason, status, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?)
                 """,
                 (
                     batch_id,
@@ -832,6 +882,8 @@ class Database:
                     record.buyer_price_minor,
                     new_seller_price_minor,
                     new_buyer_price_minor,
+                    new_stage,
+                    strategy_profile_id,
                     reason,
                     utc_now(),
                 ),

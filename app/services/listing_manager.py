@@ -582,6 +582,8 @@ class ListingManager:
                     record=record,
                     new_seller_price_minor=seller_price,
                     new_buyer_price_minor=buyer_price,
+                    new_stage=0,
+                    strategy_profile_id=profile_id,
                     reason="manual",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
@@ -681,77 +683,95 @@ class ListingManager:
                 record.appid, record.market_hash_name
             ):
                 continue
-            if not record.steam_listing_id:
-                self.store.update_listing(record.id, state=ListingState.PAUSED)
-                continue
-            profile_id, stages = self.stages(record.strategy_profile_id, record.strategy)
-            current_stage = stages[min(record.stage, len(stages) - 1)]
-            if (
-                current_stage.action_after_timeout is StageAction.PAUSE
-                or record.stage + 1 >= len(stages)
-            ):
-                self.store.update_listing(record.id, state=ListingState.PAUSED)
-                continue
-            await self.market.update_price_history(
-                record.appid, record.market_hash_name, currency
-            )
-            next_stage_index = record.stage + 1
-            next_stage = stages[next_stage_index]
-            points = _as_points(
-                self.store.prices(
-                    record.appid, record.market_hash_name, currency.value
-                ),
-                self.fee_options(),
-            )
-            current_lowest = await self.current_lowest_for_stage(
-                next_stage,
-                record.appid,
-                record.market_hash_name,
-                currency,
-            )
-            seller_price, buyer_price = self.stage_price(
-                next_stage,
-                points,
-                minimum_buyer_price_minor=record.minimum_buyer_price_minor,
-                current_lowest_minor=current_lowest,
-                current_buyer_price_minor=record.buyer_price_minor,
-            )
-            self.store.create_reprice_history(
-                batch_id=batch_id,
-                listing_record_id=record.id,
-                record=record,
-                new_seller_price_minor=seller_price,
-                new_buyer_price_minor=buyer_price,
-                reason="age_timeout",
-            )
             try:
+                if not record.steam_listing_id:
+                    self.store.update_listing(
+                        record.id,
+                        state=ListingState.PAUSED,
+                        error_message="挂单缺少 Steam Listing ID，已暂停",
+                    )
+                    processed += 1
+                    continue
+                profile_id, stages = self.stages(
+                    record.strategy_profile_id, record.strategy
+                )
+                current_stage = stages[min(record.stage, len(stages) - 1)]
+                if (
+                    current_stage.action_after_timeout is StageAction.PAUSE
+                    or record.stage + 1 >= len(stages)
+                ):
+                    self.store.update_listing(
+                        record.id,
+                        state=ListingState.PAUSED,
+                        error_message="最终阶段已超时，已暂停自动调价",
+                    )
+                    processed += 1
+                    continue
+                await self.market.update_price_history(
+                    record.appid, record.market_hash_name, currency
+                )
+                next_stage_index = record.stage + 1
+                next_stage = stages[next_stage_index]
+                points = _as_points(
+                    self.store.prices(
+                        record.appid, record.market_hash_name, currency.value
+                    ),
+                    self.fee_options(),
+                )
+                if not points:
+                    raise RuntimeError("没有可用的最近30天价格数据")
+                current_lowest = await self.current_lowest_for_stage(
+                    next_stage,
+                    record.appid,
+                    record.market_hash_name,
+                    currency,
+                )
+                seller_price, buyer_price = self.stage_price(
+                    next_stage,
+                    points,
+                    minimum_buyer_price_minor=record.minimum_buyer_price_minor,
+                    current_lowest_minor=current_lowest,
+                    current_buyer_price_minor=record.buyer_price_minor,
+                )
+                self.store.create_reprice_history(
+                    batch_id=batch_id,
+                    listing_record_id=record.id,
+                    record=record,
+                    new_seller_price_minor=seller_price,
+                    new_buyer_price_minor=buyer_price,
+                    new_stage=next_stage_index,
+                    strategy_profile_id=profile_id,
+                    reason="age_timeout",
+                )
                 await self.market.cancel_listing(record.steam_listing_id)
-            except (PermissionError, RuntimeError) as exc:
+                self.store.update_listing(
+                    record.id,
+                    state=ListingState.PLANNED,
+                    stage=next_stage_index,
+                    strategy=next_stage.pricing_source,
+                    strategy_profile_id=profile_id,
+                    seller_price_minor=seller_price,
+                    buyer_price_minor=buyer_price,
+                    steam_listing_id=None,
+                    active_since=None,
+                    next_action_at=None,
+                    error_message=None,
+                )
+                self.store.audit(
+                    "listing.reprice",
+                    record.assetid,
+                    {
+                        "stage": next_stage_index,
+                        "strategy_profile_id": profile_id,
+                        "stage_definition": next_stage.model_dump(mode="json"),
+                    },
+                )
+                processed += 1
+                resubmit_ids.append(record.id)
+            except (PermissionError, RuntimeError, ValueError) as exc:
                 self.store.fail_reprice_history(record.id, str(exc))
-                raise
-            self.store.update_listing(
-                record.id,
-                state=ListingState.PLANNED,
-                stage=next_stage_index,
-                strategy=next_stage.pricing_source,
-                strategy_profile_id=profile_id,
-                seller_price_minor=seller_price,
-                buyer_price_minor=buyer_price,
-                steam_listing_id=None,
-                active_since=None,
-                next_action_at=None,
-            )
-            self.store.audit(
-                "listing.reprice",
-                record.assetid,
-                {
-                    "stage": next_stage_index,
-                    "strategy_profile_id": profile_id,
-                    "stage_definition": next_stage.model_dump(mode="json"),
-                },
-            )
-            processed += 1
-            resubmit_ids.append(record.id)
+                self.store.update_listing(record.id, error_message=str(exc))
+                continue
         if resubmit_ids and settings.allow_market_writes and not settings.dry_run:
             await self.execute(resubmit_ids, EXECUTE_CONFIRMATION)
         return processed

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.database import Database
@@ -221,6 +222,8 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
         new_seller_price_minor=900,
         new_buyer_price_minor=1035,
         reason="age_timeout",
+        new_stage=1,
+        strategy_profile_id=database.strategy_profile().id,
     )
     database.update_listing(
         listing_id,
@@ -233,3 +236,24 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
     assert reference is not None
     assert reference.new_buyer_price_minor == 1035
     assert reference.status == "confirmed"
+
+    database.clear_runtime_cache()
+    database.import_active_listings(
+        [
+            {
+                "listing_id": "new-listing",
+                "assetid": "100",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Test Item",
+                "buyer_price_minor": 1035,
+                "listed_at": "2026-07-01T00:00:00+00:00",
+            }
+        ]
+    )
+    restored = database.listings()[0]
+    assert restored.stage == 1
+    assert restored.strategy is PricingStrategy.ROBUST_MEDIAN
+    assert restored.next_action_at == datetime(
+        2026, 7, 4, tzinfo=UTC
+    )
