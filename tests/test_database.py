@@ -86,8 +86,10 @@ def test_blacklist_hides_inventory_and_pauses_plan(tmp_path: Path) -> None:
     assert database.counts()["sellable_items"] == 0
     assert database.listing(listing_id).state is ListingState.PAUSED
     assert database.blacklist()[0]["market_hash_name"] == "Test"
+    assert database.is_blacklisted(730, "Test") is True
 
     database.remove_blacklist(730, "Test")
+    assert database.is_blacklisted(730, "Test") is False
     assert len(database.inventory(marketable_only=True)) == 1
 
 

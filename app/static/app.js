@@ -227,8 +227,11 @@ function collectStrategyEditor() {
   };
 }
 
-function renderListings(items) {
+function renderListings(items, blacklist) {
   currentListings = items;
+  const blacklistKeys = new Set(
+    blacklist.map((item) => `${item.appid}\u0000${item.market_hash_name}`)
+  );
   const priceReviews = items.filter((item) => item.state === "price_review");
   const newListings = items.filter((item) =>
     ["planned", "pending_confirmation", "failed"].includes(item.state)
@@ -254,6 +257,7 @@ function renderListings(items) {
         steamListedTimes: [item.steam_listed_at],
         nextActionTimes: [item.next_action_at],
         errors: new Set(item.error_message ? [item.error_message] : []),
+        blacklisted: blacklistKeys.has(key),
       });
     }
     return groups;
@@ -289,7 +293,9 @@ function renderListings(items) {
     : '<tr><td colspan="5">没有价格异常任务</td></tr>';
   $("#active-listings-body").innerHTML = groupedActiveListings.length
     ? groupedActiveListings.map((item, index) => `<tr>
-        <td><input class="active-select" type="checkbox" data-group-index="${index}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
+        <td><input class="active-select" type="checkbox" data-group-index="${index}"
+          ${item.blacklisted ? "disabled" : ""}
+          aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${escapeHtml(item.market_hash_name)}</td>
         <td>${item.listingIds.length}</td>
         <td>${item.strategies.size === 1 ? [...item.strategies][0] : "多个策略"}</td>
@@ -299,8 +305,11 @@ function renderListings(items) {
           ? displaySteamTime(earliestTime(item.nextActionTimes))
           : "未设置"}</td>
         <td class="${item.errors.size ? "error-text" : ""}">${escapeHtml([...item.errors].join("；"))}</td>
+        <td><button class="secondary active-blacklist-toggle" type="button" data-group-index="${index}">
+          ${item.blacklisted ? "移出黑名单" : "加入黑名单"}
+        </button></td>
       </tr>`).join("")
-    : '<tr><td colspan="8">当前没有已同步的在售挂单</td></tr>';
+    : '<tr><td colspan="9">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }
@@ -336,7 +345,7 @@ async function load() {
     renderStrategySelectors();
     if (editingStrategy) renderStrategyEditor(editingStrategy);
     renderInventory(inventory);
-    renderListings(listings);
+    renderListings(listings, blacklist);
     renderBlacklist(blacklist);
   } catch (error) {
     $("#health").textContent = error.message;
@@ -420,7 +429,7 @@ $("#sync-listings").addEventListener("click", () => busy($("#sync-listings"), as
   await load();
 }));
 $("#select-all-active").addEventListener("change", (event) => {
-  document.querySelectorAll(".active-select").forEach((checkbox) => {
+  document.querySelectorAll(".active-select:not(:disabled)").forEach((checkbox) => {
     checkbox.checked = event.target.checked;
   });
 });
@@ -468,10 +477,34 @@ $("#price-review-body").addEventListener("click", async (event) => {
   });
 });
 $("#active-listings-body").addEventListener("change", () => {
-  const checkboxes = Array.from(document.querySelectorAll(".active-select"));
+  const checkboxes = Array.from(
+    document.querySelectorAll(".active-select:not(:disabled)")
+  );
   const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
   $("#select-all-active").checked = checkboxes.length > 0 && checked === checkboxes.length;
   $("#select-all-active").indeterminate = checked > 0 && checked < checkboxes.length;
+});
+$("#active-listings-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".active-blacklist-toggle");
+  if (!button) return;
+  await busy(button, async () => {
+    const item = groupedActiveListings[Number(button.dataset.groupIndex)];
+    if (item.blacklisted) {
+      const query = new URLSearchParams({
+        appid: String(item.appid),
+        market_hash_name: item.market_hash_name,
+      });
+      await remove(`/api/blacklist?${query}`);
+      toast(`${item.market_hash_name} 已移出黑名单`);
+    } else {
+      await post("/api/blacklist", {
+        appid: item.appid,
+        market_hash_name: item.market_hash_name,
+      });
+      toast(`${item.market_hash_name} 已加入黑名单，后续不会自动调价`);
+    }
+    await load();
+  });
 });
 $("#reprice-active").addEventListener("click", () => busy($("#reprice-active"), async () => {
   const ids = Array.from(document.querySelectorAll(".active-select:checked"))

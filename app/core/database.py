@@ -345,6 +345,19 @@ class Database:
                 )
             ]
 
+    def is_blacklisted(self, appid: int, market_hash_name: str) -> bool:
+        with self.connect() as db:
+            return (
+                db.execute(
+                    """
+                    SELECT 1 FROM item_blacklist
+                    WHERE appid = ? AND market_hash_name = ?
+                    """,
+                    (appid, market_hash_name),
+                ).fetchone()
+                is not None
+            )
+
     def settings(self) -> AppSettings:
         with self.connect() as db:
             values = {

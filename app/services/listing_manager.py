@@ -485,6 +485,14 @@ class ListingManager:
             record = self.store.listing(listing_id)
             if not record or record.state is not ListingState.ACTIVE:
                 continue
+            if self.store.is_blacklisted(
+                record.appid, record.market_hash_name
+            ):
+                self.store.update_listing(
+                    record.id,
+                    error_message="该饰品在黑名单中，已跳过调价",
+                )
+                continue
             if (
                 not record.steam_listing_id
                 or not record.assetid
@@ -626,6 +634,10 @@ class ListingManager:
         batch_id = uuid.uuid4().hex
         for record in self.store.listings([ListingState.ACTIVE]):
             if not record.next_action_at or record.next_action_at > now:
+                continue
+            if self.store.is_blacklisted(
+                record.appid, record.market_hash_name
+            ):
                 continue
             if not record.steam_listing_id:
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
