@@ -214,21 +214,25 @@ class Database:
                     StrategyStage(
                         name="趋势试探",
                         pricing_source=PricingStrategy.TREND,
+                        maximum_drop_percent=5,
                         duration_hours=72,
                     ),
                     StrategyStage(
                         name="稳健出售",
                         pricing_source=PricingStrategy.ROBUST_MEDIAN,
+                        maximum_drop_percent=5,
                         duration_hours=48,
                     ),
                     StrategyStage(
                         name="跟随市场",
                         pricing_source=PricingStrategy.MARKET_FOLLOW,
+                        maximum_drop_percent=5,
                         duration_hours=24,
                     ),
                     StrategyStage(
                         name="快速出售",
                         pricing_source=PricingStrategy.FAST_SELL,
+                        maximum_drop_percent=30,
                         duration_hours=24,
                         action_after_timeout=StageAction.PAUSE,
                     ),
@@ -249,6 +253,23 @@ class Database:
                         now,
                     ),
                 )
+            for row in db.execute(
+                "SELECT id, stages_json FROM strategy_profiles"
+            ).fetchall():
+                stages = json.loads(row["stages_json"])
+                changed = False
+                for stage in stages:
+                    if "maximum_drop_percent" not in stage:
+                        source = stage.get("pricing_source")
+                        stage["maximum_drop_percent"] = (
+                            30 if source == PricingStrategy.FAST_SELL.value else 5
+                        )
+                        changed = True
+                if changed:
+                    db.execute(
+                        "UPDATE strategy_profiles SET stages_json = ? WHERE id = ?",
+                        (json.dumps(stages, ensure_ascii=False), row["id"]),
+                    )
 
     def clear_runtime_cache(self) -> None:
         """清除库存、行情和全部挂单任务；黑名单与设置继续保留。"""

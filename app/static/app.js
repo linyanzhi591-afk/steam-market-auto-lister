@@ -131,7 +131,7 @@ function renderBlacklist(items) {
 }
 
 const pricingSourceLabels = {
-  robust_median: "30天稳健中位价",
+  robust_median: "时间加权稳健价",
   market_follow: "市场跟随价",
   trend: "趋势预测价",
   fast_sell: "快速出售价",
@@ -153,6 +153,16 @@ function defaultStage() {
     adjustment_fixed_minor: 0,
     absolute_floor_minor: 1,
     median_floor_percent: 0,
+    history_window_days: 30,
+    time_half_life_days: 7,
+    recent_window_days: 3,
+    trend_window_days: 7,
+    trend_half_life_days: 3,
+    forecast_hours: 6,
+    recent_floor_percent: 90,
+    long_floor_percent: 85,
+    maximum_drop_percent: null,
+    minimum_price_points: 24,
     duration_hours: 24,
     action_after_timeout: "next",
   };
@@ -198,6 +208,16 @@ function renderStrategyEditor(profile) {
         <label>固定金额调整<input data-field="adjustment_fixed" type="number" step="0.01" value="${stage.adjustment_fixed_minor / 100}" /></label>
         <label>绝对上架底价<input data-field="absolute_floor" type="number" min="0.01" step="0.01" value="${stage.absolute_floor_minor / 100}" /></label>
         <label>中位价底线比例<input data-field="median_floor_percent" type="number" min="0" max="300" step="0.1" value="${stage.median_floor_percent}" /></label>
+        <label>历史窗口（天）<input data-field="history_window_days" type="number" min="3" max="30" value="${stage.history_window_days}" /></label>
+        <label>长期权重半衰期（天）<input data-field="time_half_life_days" type="number" min="0.5" max="30" step="0.5" value="${stage.time_half_life_days}" /></label>
+        <label>近期窗口（天）<input data-field="recent_window_days" type="number" min="1" max="14" value="${stage.recent_window_days}" /></label>
+        <label>趋势窗口（天）<input data-field="trend_window_days" type="number" min="2" max="30" value="${stage.trend_window_days}" /></label>
+        <label>趋势权重半衰期（天）<input data-field="trend_half_life_days" type="number" min="0.5" max="30" step="0.5" value="${stage.trend_half_life_days}" /></label>
+        <label>趋势预测（小时）<input data-field="forecast_hours" type="number" min="0" max="48" value="${stage.forecast_hours}" /></label>
+        <label>近期价格底线（%）<input data-field="recent_floor_percent" type="number" min="0" max="200" step="0.1" value="${stage.recent_floor_percent}" /></label>
+        <label>长期价格底线（%）<input data-field="long_floor_percent" type="number" min="0" max="200" step="0.1" value="${stage.long_floor_percent}" /></label>
+        <label>单次最大降幅（%）<input data-field="maximum_drop_percent" type="number" min="0" max="100" step="0.1" value="${stage.maximum_drop_percent ?? ""}" placeholder="不限制" /></label>
+        <label>最低有效价格点<input data-field="minimum_price_points" type="number" min="1" max="1000" value="${stage.minimum_price_points}" /></label>
         <label>持续时间（小时）<input data-field="duration_hours" type="number" min="1" max="720" value="${stage.duration_hours}" /></label>
         <label>超时动作<select data-field="action_after_timeout">
           <option value="next" ${stage.action_after_timeout === "next" ? "selected" : ""}>进入下一阶段</option>
@@ -216,6 +236,18 @@ function collectStrategyEditor() {
     adjustment_fixed_minor: Math.round(Number(card.querySelector('[data-field="adjustment_fixed"]').value) * 100),
     absolute_floor_minor: Math.round(Number(card.querySelector('[data-field="absolute_floor"]').value) * 100),
     median_floor_percent: Number(card.querySelector('[data-field="median_floor_percent"]').value),
+    history_window_days: Number(card.querySelector('[data-field="history_window_days"]').value),
+    time_half_life_days: Number(card.querySelector('[data-field="time_half_life_days"]').value),
+    recent_window_days: Number(card.querySelector('[data-field="recent_window_days"]').value),
+    trend_window_days: Number(card.querySelector('[data-field="trend_window_days"]').value),
+    trend_half_life_days: Number(card.querySelector('[data-field="trend_half_life_days"]').value),
+    forecast_hours: Number(card.querySelector('[data-field="forecast_hours"]').value),
+    recent_floor_percent: Number(card.querySelector('[data-field="recent_floor_percent"]').value),
+    long_floor_percent: Number(card.querySelector('[data-field="long_floor_percent"]').value),
+    maximum_drop_percent: card.querySelector('[data-field="maximum_drop_percent"]').value === ""
+      ? null
+      : Number(card.querySelector('[data-field="maximum_drop_percent"]').value),
+    minimum_price_points: Number(card.querySelector('[data-field="minimum_price_points"]').value),
     duration_hours: Number(card.querySelector('[data-field="duration_hours"]').value),
     action_after_timeout: card.querySelector('[data-field="action_after_timeout"]').value,
   }));

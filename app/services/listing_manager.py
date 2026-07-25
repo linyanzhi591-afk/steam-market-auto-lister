@@ -88,6 +88,20 @@ class ListingManager:
             )
         ]
 
+    @staticmethod
+    def pricing_options(stage: StrategyStage) -> dict[str, float | int]:
+        return {
+            "history_window_days": stage.history_window_days,
+            "time_half_life_days": stage.time_half_life_days,
+            "recent_window_days": stage.recent_window_days,
+            "trend_window_days": stage.trend_window_days,
+            "trend_half_life_days": stage.trend_half_life_days,
+            "forecast_hours": stage.forecast_hours,
+            "recent_floor_percent": stage.recent_floor_percent,
+            "long_floor_percent": stage.long_floor_percent,
+            "minimum_price_points": stage.minimum_price_points,
+        }
+
     def stage_price(
         self,
         stage: StrategyStage,
@@ -95,14 +109,21 @@ class ListingManager:
         *,
         minimum_buyer_price_minor: int,
         current_lowest_minor: int | None = None,
+        current_buyer_price_minor: int | None = None,
     ) -> tuple[int, int]:
+        pricing_options = self.pricing_options(stage)
         decision = calculate_price(
             stage.pricing_source,
             points,
             current_lowest_minor=current_lowest_minor,
             fee_options=self.fee_options(),
+            pricing_options=pricing_options,
         )
-        median_decision = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
+        median_decision = calculate_price(
+            PricingStrategy.ROBUST_MEDIAN,
+            points,
+            pricing_options=pricing_options,
+        )
         adjusted = round(
             decision.price_minor * (1 + stage.adjustment_percent / 100)
         )
@@ -119,12 +140,28 @@ class ListingManager:
             stage.absolute_floor_minor,
             median_floor,
         )
+        if (
+            current_buyer_price_minor is not None
+            and stage.maximum_drop_percent is not None
+        ):
+            buyer_target = max(
+                buyer_target,
+                round(
+                    current_buyer_price_minor
+                    * (1 - stage.maximum_drop_percent / 100)
+                ),
+            )
         seller_price = seller_receive_for_buyer_pay(
             buyer_target, **fee_options
         )
         buyer_price = buyer_pays_for_seller_receive(
             seller_price, **fee_options
         )
+        while buyer_price < buyer_target:
+            seller_price += 1
+            buyer_price = buyer_pays_for_seller_receive(
+                seller_price, **fee_options
+            )
         return seller_price, buyer_price
 
     async def current_lowest_for_stage(
@@ -212,7 +249,9 @@ class ListingManager:
             )
             if reference:
                 median_price = calculate_price(
-                    PricingStrategy.ROBUST_MEDIAN, points
+                    PricingStrategy.ROBUST_MEDIAN,
+                    points,
+                    pricing_options=self.pricing_options(first_stage),
                 ).price_minor
                 median_floor = round(
                     median_price * first_stage.median_floor_percent / 100
@@ -533,6 +572,7 @@ class ListingManager:
                     points,
                     minimum_buyer_price_minor=record.minimum_buyer_price_minor,
                     current_lowest_minor=current_lowest,
+                    current_buyer_price_minor=record.buyer_price_minor,
                 )
                 self.store.create_reprice_history(
                     batch_id=batch_id,
@@ -672,6 +712,7 @@ class ListingManager:
                 points,
                 minimum_buyer_price_minor=record.minimum_buyer_price_minor,
                 current_lowest_minor=current_lowest,
+                current_buyer_price_minor=record.buyer_price_minor,
             )
             self.store.create_reprice_history(
                 batch_id=batch_id,

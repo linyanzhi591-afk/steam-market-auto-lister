@@ -1,4 +1,6 @@
 import math
+from datetime import timedelta
+from itertools import pairwise
 from statistics import median
 
 from app.core.models import PriceDecision, PricePoint, PricingStrategy
@@ -76,6 +78,43 @@ def _weighted_median(points: list[PricePoint]) -> int:
     return ordered[-1].price_minor
 
 
+def _time_volume_weight(
+    point: PricePoint,
+    reference_time,
+    half_life_days: float,
+) -> float:
+    age_days = max(
+        0.0,
+        (reference_time - point.timestamp).total_seconds() / 86_400,
+    )
+    time_weight = 0.5 ** (age_days / half_life_days)
+    volume_weight = 1 + math.log1p(point.volume)
+    return time_weight * volume_weight
+
+
+def _weighted_quantile(
+    points: list[PricePoint],
+    quantile: float,
+    *,
+    reference_time,
+    half_life_days: float,
+) -> int:
+    ordered = sorted(
+        (
+            point.price_minor,
+            _time_volume_weight(point, reference_time, half_life_days),
+        )
+        for point in points
+    )
+    threshold = sum(weight for _, weight in ordered) * quantile
+    running = 0.0
+    for price, weight in ordered:
+        running += weight
+        if running >= threshold:
+            return price
+    return ordered[-1][0]
+
+
 def clean_points(points: list[PricePoint]) -> list[PricePoint]:
     """过滤无效值，并使用 IQR 边界排除明显异常价格。"""
     valid = [point for point in points if point.price_minor > 0 and point.volume > 0]
@@ -88,6 +127,55 @@ def clean_points(points: list[PricePoint]) -> list[PricePoint]:
     iqr = q3 - q1
     low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
     return [point for point in valid if low <= point.price_minor <= high]
+
+
+def clean_points_by_age(
+    points: list[PricePoint],
+    *,
+    history_window_days: int = 30,
+) -> list[PricePoint]:
+    """按时间段分别清洗，避免旧价格区间影响近期异常值判断。"""
+    valid = [point for point in points if point.price_minor > 0 and point.volume > 0]
+    if not valid:
+        return []
+    reference_time = max(point.timestamp for point in valid)
+    boundaries = sorted(
+        {
+            0,
+            min(3, history_window_days),
+            min(7, history_window_days),
+            min(14, history_window_days),
+            history_window_days + 1,
+        }
+    )
+    cleaned: list[PricePoint] = []
+    for start, end in pairwise(boundaries):
+        bucket = [
+            point
+            for point in valid
+            if start
+            <= (reference_time - point.timestamp).total_seconds() / 86_400
+            < end
+        ]
+        cleaned.extend(clean_points(bucket))
+    return sorted(cleaned, key=lambda point: point.timestamp)
+
+
+def _recent_points(
+    points: list[PricePoint],
+    reference_time,
+    preferred_days: int,
+    minimum_price_points: int,
+) -> list[PricePoint]:
+    for days in dict.fromkeys((preferred_days, 7, 14, 30)):
+        selected = [
+            point
+            for point in points
+            if reference_time - point.timestamp <= timedelta(days=days)
+        ]
+        if len(selected) >= minimum_price_points:
+            return selected
+    return points
 
 
 def _confidence(points: list[PricePoint]) -> str:
@@ -107,16 +195,52 @@ def _decision(
     )
 
 
-def robust_median(points: list[PricePoint]) -> PriceDecision:
-    cleaned = clean_points(points)
+def robust_median(
+    points: list[PricePoint],
+    *,
+    history_window_days: int = 30,
+    time_half_life_days: float = 7,
+    recent_window_days: int = 3,
+    trend_half_life_days: float = 3,
+    minimum_price_points: int = 24,
+    **_unused: float,
+) -> PriceDecision:
+    cleaned = clean_points_by_age(
+        points, history_window_days=history_window_days
+    )
     if not cleaned:
         raise ValueError("最近 30 天没有有效成交数据")
-    value = _weighted_median(cleaned)
+    reference_time = max(point.timestamp for point in cleaned)
+    long_value = _weighted_quantile(
+        cleaned,
+        0.5,
+        reference_time=reference_time,
+        half_life_days=time_half_life_days,
+    )
+    recent = _recent_points(
+        cleaned,
+        reference_time,
+        recent_window_days,
+        minimum_price_points,
+    )
+    recent_value = _weighted_quantile(
+        recent,
+        0.5,
+        reference_time=reference_time,
+        half_life_days=trend_half_life_days,
+    )
+    lower = max(round(long_value * 0.85), round(recent_value * 0.92))
+    upper = min(round(long_value * 1.15), round(recent_value * 1.08))
+    value = min(max(long_value, lower), max(lower, upper))
     return _decision(
         PricingStrategy.ROBUST_MEDIAN,
         value,
         cleaned,
-        f"使用最近 30 天 {len(cleaned)} 个清洗后成交点的成交量加权中位价",
+        (
+            f"使用 {len(cleaned)} 个分段清洗成交点；30天时间加权中位价"
+            f"{long_value / 100:.2f}，近期时间加权中位价"
+            f"{recent_value / 100:.2f}"
+        ),
     )
 
 
@@ -125,10 +249,13 @@ def market_follow(
     current_lowest_minor: int | None,
     fee_options: dict[str, float | int] | None = None,
 ) -> PriceDecision:
-    cleaned = clean_points(points)
-    if not cleaned:
-        raise ValueError("最近 30 天没有有效成交数据")
-    reference = _weighted_median(cleaned)
+    options = fee_options or {}
+    base = robust_median(points, **options)
+    cleaned = clean_points_by_age(
+        points,
+        history_window_days=int(options.get("history_window_days", 30)),
+    )
+    reference = base.price_minor
     if current_lowest_minor and current_lowest_minor > 2:
         price = max(
             int(reference * 0.85),
@@ -141,10 +268,32 @@ def market_follow(
     return _decision(PricingStrategy.MARKET_FOLLOW, price, cleaned, reason)
 
 
-def trend_price(points: list[PricePoint]) -> PriceDecision:
-    cleaned = sorted(clean_points(points), key=lambda point: point.timestamp)
+def trend_price(
+    points: list[PricePoint],
+    *,
+    history_window_days: int = 30,
+    time_half_life_days: float = 7,
+    recent_window_days: int = 3,
+    trend_window_days: int = 7,
+    trend_half_life_days: float = 3,
+    forecast_hours: int = 6,
+    recent_floor_percent: float = 90,
+    long_floor_percent: float = 85,
+    minimum_price_points: int = 24,
+) -> PriceDecision:
+    cleaned = clean_points_by_age(
+        points, history_window_days=history_window_days
+    )
+    robust = robust_median(
+        cleaned,
+        history_window_days=history_window_days,
+        time_half_life_days=time_half_life_days,
+        recent_window_days=recent_window_days,
+        trend_half_life_days=trend_half_life_days,
+        minimum_price_points=minimum_price_points,
+    )
     if len(cleaned) < 7:
-        fallback = robust_median(cleaned)
+        fallback = robust
         return fallback.model_copy(
             update={
                 "strategy": PricingStrategy.TREND,
@@ -152,16 +301,14 @@ def trend_price(points: list[PricePoint]) -> PriceDecision:
                 "reason": "有效数据不足 7 个点，趋势策略回退到稳健中位价",
             }
         )
-    first_timestamp = cleaned[0].timestamp
-    xs = [
-        (point.timestamp - first_timestamp).total_seconds() / 86_400
+    reference_time = max(point.timestamp for point in cleaned)
+    trend_points = [
+        point
         for point in cleaned
+        if reference_time - point.timestamp <= timedelta(days=trend_window_days)
     ]
-    ys = [point.price_minor for point in cleaned]
-    x_mean, y_mean = sum(xs) / len(xs), sum(ys) / len(ys)
-    denominator = sum((x - x_mean) ** 2 for x in xs)
-    if denominator == 0:
-        fallback = robust_median(cleaned)
+    if len(trend_points) < 2:
+        fallback = robust
         return fallback.model_copy(
             update={
                 "strategy": PricingStrategy.TREND,
@@ -169,18 +316,62 @@ def trend_price(points: list[PricePoint]) -> PriceDecision:
                 "reason": "有效成交点时间相同，趋势策略回退到稳健中位价",
             }
         )
-    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys, strict=True)) / denominator
-    prediction = int(y_mean + slope * (max(xs) + 1 - x_mean))
-    sorted_prices = sorted(ys)
-    lower = sorted_prices[len(sorted_prices) // 4]
-    upper = sorted_prices[(len(sorted_prices) * 3) // 4]
-    bounded = min(max(prediction, lower), upper)
+    slopes = []
+    for index, left in enumerate(trend_points):
+        for right in trend_points[index + 1 :]:
+            days = (right.timestamp - left.timestamp).total_seconds() / 86_400
+            if days:
+                slopes.append((right.price_minor - left.price_minor) / days)
+    if not slopes:
+        return robust.model_copy(
+            update={
+                "strategy": PricingStrategy.TREND,
+                "confidence": "low",
+                "reason": "有效成交点时间相同，趋势策略回退到时间加权稳健价",
+            }
+        )
+    slope = median(slopes)
+    recent = _recent_points(
+        cleaned,
+        reference_time,
+        recent_window_days,
+        minimum_price_points,
+    )
+    recent_value = _weighted_quantile(
+        recent,
+        0.5,
+        reference_time=reference_time,
+        half_life_days=trend_half_life_days,
+    )
+    long_value = _weighted_quantile(
+        cleaned,
+        0.5,
+        reference_time=reference_time,
+        half_life_days=time_half_life_days,
+    )
+    low_quartile = _weighted_quantile(
+        trend_points,
+        0.25,
+        reference_time=reference_time,
+        half_life_days=trend_half_life_days,
+    )
+    prediction = round(recent_value + slope * forecast_hours / 24)
+    bounded = max(
+        prediction,
+        round(recent_value * recent_floor_percent / 100),
+        round(long_value * long_floor_percent / 100),
+        low_quartile,
+        robust.price_minor,
+    )
     direction = "上涨" if slope > 0.5 else "下跌" if slope < -0.5 else "横盘"
     return _decision(
         PricingStrategy.TREND,
         bounded,
         cleaned,
-        f"30 天价格趋势为{direction}，预测值限制在成交价格四分位区间内",
+        (
+            f"{trend_window_days}天稳健趋势为{direction}，预测未来"
+            f"{forecast_hours}小时，并以时间加权稳健价保护"
+        ),
     )
 
 
@@ -189,11 +380,27 @@ def fast_sell(
     current_lowest_minor: int | None,
     fee_options: dict[str, float | int] | None = None,
 ) -> PriceDecision:
-    cleaned = clean_points(points)
+    options = fee_options or {}
+    history_window_days = int(options.get("history_window_days", 30))
+    trend_window_days = int(options.get("trend_window_days", 7))
+    trend_half_life_days = float(options.get("trend_half_life_days", 3))
+    cleaned = clean_points_by_age(
+        points, history_window_days=history_window_days
+    )
     if not cleaned:
         raise ValueError("最近 30 天没有有效成交数据")
-    prices = sorted(point.price_minor for point in cleaned)
-    low_quartile = prices[len(prices) // 4]
+    reference_time = max(point.timestamp for point in cleaned)
+    recent = [
+        point
+        for point in cleaned
+        if reference_time - point.timestamp <= timedelta(days=trend_window_days)
+    ] or cleaned
+    low_quartile = _weighted_quantile(
+        recent,
+        0.25,
+        reference_time=reference_time,
+        half_life_days=trend_half_life_days,
+    )
     target = low_quartile
     if current_lowest_minor and current_lowest_minor > 2:
         target = min(target, current_lowest_minor - 1)
@@ -211,11 +418,13 @@ def calculate_price(
     *,
     current_lowest_minor: int | None = None,
     fee_options: dict[str, float | int] | None = None,
+    pricing_options: dict[str, float | int] | None = None,
 ) -> PriceDecision:
+    options = pricing_options or {}
     if strategy is PricingStrategy.ROBUST_MEDIAN:
-        return robust_median(points)
+        return robust_median(points, **options)
     if strategy is PricingStrategy.MARKET_FOLLOW:
-        return market_follow(points, current_lowest_minor, fee_options)
+        return market_follow(points, current_lowest_minor, options)
     if strategy is PricingStrategy.TREND:
-        return trend_price(points)
-    return fast_sell(points, current_lowest_minor, fee_options)
+        return trend_price(points, **options)
+    return fast_sell(points, current_lowest_minor, options)

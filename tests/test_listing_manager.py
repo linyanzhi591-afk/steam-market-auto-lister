@@ -83,3 +83,27 @@ def test_fast_sell_uses_current_lowest_market_price() -> None:
     )
     assert buyer_price <= 919
     assert seller_price < 1000
+
+
+def test_stage_maximum_drop_limits_active_reprice() -> None:
+    manager = ListingManager(store=object(), market=object())
+    points = [
+        PricePoint(
+            timestamp=datetime.now(UTC),
+            price_minor=300,
+            volume=10,
+        )
+    ]
+    stage = StrategyStage(
+        name="快速出售",
+        pricing_source=PricingStrategy.FAST_SELL,
+        maximum_drop_percent=30,
+        duration_hours=24,
+    )
+    _seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_buyer_price_minor=1,
+        current_buyer_price_minor=1000,
+    )
+    assert 700 <= buyer_price <= 701

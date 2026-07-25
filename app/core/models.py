@@ -186,6 +186,16 @@ class StrategyStage(BaseModel):
     adjustment_fixed_minor: int = Field(default=0, ge=-1_000_000, le=1_000_000)
     absolute_floor_minor: int = Field(default=1, ge=1)
     median_floor_percent: float = Field(default=0, ge=0, le=300)
+    history_window_days: int = Field(default=30, ge=3, le=30)
+    time_half_life_days: float = Field(default=7, ge=0.5, le=30)
+    recent_window_days: int = Field(default=3, ge=1, le=14)
+    trend_window_days: int = Field(default=7, ge=2, le=30)
+    trend_half_life_days: float = Field(default=3, ge=0.5, le=30)
+    forecast_hours: int = Field(default=6, ge=0, le=48)
+    recent_floor_percent: float = Field(default=90, ge=0, le=200)
+    long_floor_percent: float = Field(default=85, ge=0, le=200)
+    maximum_drop_percent: float | None = Field(default=None, ge=0, le=100)
+    minimum_price_points: int = Field(default=24, ge=1, le=1000)
     duration_hours: int = Field(default=24, ge=1, le=720)
     action_after_timeout: StageAction = StageAction.NEXT
 

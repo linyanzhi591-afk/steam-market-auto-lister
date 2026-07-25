@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -76,7 +76,39 @@ def test_fast_sell_uses_lower_price() -> None:
         for price in [900, 1000, 1100, 1200]
     ]
     decision = calculate_price(PricingStrategy.FAST_SELL, points)
-    assert decision.price_minor == 1000
+    assert decision.price_minor == 900
+
+
+def test_recent_prices_have_more_weight_in_robust_price() -> None:
+    now = datetime.now(UTC)
+    points = [
+        PricePoint(
+            timestamp=now - timedelta(days=20),
+            price_minor=1200,
+            volume=20,
+        )
+        for _ in range(10)
+    ] + [
+        PricePoint(timestamp=now, price_minor=800, volume=5)
+        for _ in range(10)
+    ]
+    decision = robust_median(points, minimum_price_points=1)
+    assert decision.price_minor <= 864
+
+
+def test_trend_price_is_not_below_optimized_robust_price() -> None:
+    now = datetime.now(UTC)
+    points = [
+        PricePoint(
+            timestamp=now - timedelta(hours=index),
+            price_minor=1000 - index,
+            volume=5,
+        )
+        for index in range(100)
+    ]
+    robust = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
+    trend = calculate_price(PricingStrategy.TREND, points)
+    assert trend.price_minor >= robust.price_minor
 
 
 def test_trend_falls_back_when_timestamps_are_identical() -> None:
