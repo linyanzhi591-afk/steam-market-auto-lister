@@ -59,15 +59,17 @@ class ListingManager:
             Currency.INR: 200,
             Currency.CNY: 14,
         }.get(status.wallet_currency, 2)
-        publisher_fee_minimum = 1
+        steam_fee_minimum = (
+            1
+            if status.wallet_currency in {Currency.INR, Currency.CNY}
+            else status.wallet_fee_minimum
+        )
         return {
             "steam_fee_rate": status.wallet_fee_percent,
-            "steam_fee_minimum": max(
-                0, minimum_total_fee - publisher_fee_minimum
-            ),
+            "steam_fee_minimum": steam_fee_minimum,
             "steam_fee_base": status.wallet_fee_base,
             "publisher_fee_rate": status.wallet_publisher_fee_percent_default,
-            "publisher_fee_minimum": publisher_fee_minimum,
+            "publisher_fee_minimum": 1,
             "minimum_total_fee": minimum_total_fee,
         }
 

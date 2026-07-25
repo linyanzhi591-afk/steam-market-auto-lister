@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.core.models import Currency, PricePoint, PricingStrategy, StrategyStage
+from app.core.models import (
+    Currency,
+    PricePoint,
+    PricingStrategy,
+    SessionState,
+    SessionStatus,
+    StrategyStage,
+)
 from app.services.listing_manager import ListingManager, _as_points
 
 
@@ -107,3 +114,21 @@ def test_stage_maximum_drop_limits_active_reprice() -> None:
         current_buyer_price_minor=1000,
     )
     assert 700 <= buyer_price <= 701
+
+
+def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:
+    class Session:
+        def status(self) -> SessionStatus:
+            return SessionStatus(
+                state=SessionState.LOGGED_IN,
+                wallet_currency=Currency.INR,
+                wallet_fee_minimum=200,
+                message="ok",
+            )
+
+    class Market:
+        session = Session()
+
+    options = ListingManager(store=object(), market=Market()).fee_options()
+    assert options["steam_fee_minimum"] == 1
+    assert options["minimum_total_fee"] == 200

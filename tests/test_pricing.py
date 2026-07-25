@@ -61,12 +61,25 @@ def test_currency_minimum_total_fee(
     minimum_total_fee: int, expected: int
 ) -> None:
     options = {
-        "steam_fee_minimum": minimum_total_fee - 1,
+        "steam_fee_minimum": 1,
         "publisher_fee_minimum": 1,
         "minimum_total_fee": minimum_total_fee,
     }
     assert buyer_pays_for_seller_receive(1, **options) == expected
     assert seller_receive_for_buyer_pay(expected, **options) == 1
+
+
+def test_inr_total_fee_regression_for_mobile_confirmation_price() -> None:
+    options = {
+        "steam_fee_rate": 0.05,
+        "publisher_fee_rate": 0.10,
+        "steam_fee_minimum": 1,
+        "publisher_fee_minimum": 1,
+        "minimum_total_fee": 200,
+    }
+    seller_price = seller_receive_for_buyer_pay(1432, **options)
+    assert seller_price == 1232
+    assert buyer_pays_for_seller_receive(seller_price, **options) == 1432
 
 
 def test_fast_sell_uses_lower_price() -> None:
