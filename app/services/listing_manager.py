@@ -1,9 +1,11 @@
 import sqlite3
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
 from app.core.database import Database, database
 from app.core.models import (
+    AppSettings,
     Currency,
     ListingRecord,
     ListingState,
@@ -135,6 +137,9 @@ class ListingManager:
         created: list[int] = []
         missing_prices: set[str] = set()
         lowest_price_cache: dict[tuple[int, str], int | None] = {}
+        app_settings = (
+            self.store.settings() if hasattr(self.store, "settings") else AppSettings()
+        )
         for asset in selected:
             points = _as_points(
                 self.store.prices(
@@ -159,6 +164,39 @@ class ListingManager:
                 minimum_receive_minor=minimum_receive_minor,
                 current_lowest_minor=current_lowest,
             )
+            strategy_seller_price = seller_price
+            strategy_buyer_price = buyer_price
+            price_source = "strategy"
+            reference_reprice_id = None
+            price_difference_percent = None
+            state = ListingState.PLANNED
+            reference = self.store.latest_active_age_reprice(
+                item_key[0], item_key[1]
+            )
+            if reference:
+                median_price = calculate_price(
+                    PricingStrategy.ROBUST_MEDIAN, points
+                ).seller_receives_minor
+                median_floor = round(
+                    median_price * first_stage.median_floor_percent / 100
+                )
+                seller_price = max(
+                    1,
+                    reference.new_seller_price_minor,
+                    minimum_receive_minor,
+                    first_stage.absolute_floor_minor,
+                    median_floor,
+                )
+                buyer_price = buyer_pays_for_seller_receive(seller_price)
+                price_source = "age_reprice_reference"
+                reference_reprice_id = reference.id
+                price_difference_percent = (
+                    abs(buyer_price - strategy_buyer_price)
+                    / strategy_buyer_price
+                    * 100
+                )
+                if price_difference_percent > 20:
+                    state = ListingState.PRICE_REVIEW
             maximum = maximum_buyer_price_minor or settings.max_unit_buyer_price_minor
             if buyer_price > maximum:
                 continue
@@ -170,9 +208,27 @@ class ListingManager:
                     buyer_price,
                     minimum_receive_minor,
                     profile_id,
+                    state=state,
+                    price_source=price_source,
+                    strategy_seller_price_minor=strategy_seller_price,
+                    strategy_buyer_price_minor=strategy_buyer_price,
+                    reference_reprice_id=reference_reprice_id,
+                    price_difference_percent=price_difference_percent,
                 )
             except sqlite3.IntegrityError:
                 continue
+            if (
+                app_settings.inventory_pressure_enabled
+                and self.store.item_exposure_count(*item_key)
+                >= app_settings.inventory_pressure_threshold
+            ):
+                self.store.update_listing(
+                    listing_id,
+                    error_message=(
+                        "同款库存暴露数量已达到"
+                        f"{app_settings.inventory_pressure_threshold}件阈值"
+                    ),
+                )
             created.append(listing_id)
             self.store.audit(
                 "listing.plan",
@@ -205,6 +261,48 @@ class ListingManager:
                 ListingState.FAILED,
             }:
                 continue
+            if record.price_source == "age_reprice_reference":
+                reference = self.store.latest_active_age_reprice(
+                    record.appid, record.market_hash_name
+                )
+                if not reference:
+                    if (
+                        record.strategy_seller_price_minor is not None
+                        and record.strategy_buyer_price_minor is not None
+                    ):
+                        self.store.update_listing(
+                            record.id,
+                            seller_price_minor=record.strategy_seller_price_minor,
+                            buyer_price_minor=record.strategy_buyer_price_minor,
+                            price_source="strategy_reference_expired",
+                            reference_reprice_id=None,
+                        )
+                else:
+                    seller_price = max(
+                        reference.new_seller_price_minor,
+                        record.minimum_receive_minor,
+                    )
+                    buyer_price = buyer_pays_for_seller_receive(seller_price)
+                    strategy_buyer = record.strategy_buyer_price_minor or buyer_price
+                    difference = abs(buyer_price - strategy_buyer) / strategy_buyer * 100
+                    if difference > 20:
+                        self.store.update_listing(
+                            record.id,
+                            state=ListingState.PRICE_REVIEW,
+                            seller_price_minor=seller_price,
+                            buyer_price_minor=buyer_price,
+                            reference_reprice_id=reference.id,
+                            price_difference_percent=difference,
+                        )
+                        continue
+                    self.store.update_listing(
+                        record.id,
+                        seller_price_minor=seller_price,
+                        buyer_price_minor=buyer_price,
+                        reference_reprice_id=reference.id,
+                        price_difference_percent=difference,
+                    )
+                record = self.store.listing(record.id) or record
             try:
                 payload = await self.market.create_listing(
                     record.appid,
@@ -231,10 +329,60 @@ class ListingManager:
                     error_message=str(exc),
                 )
                 self.store.audit("listing.submit_failed", record.assetid, {"error": str(exc)})
+                self.store.fail_reprice_history(record.id, str(exc))
             updated = self.store.listing(record.id)
             if updated:
                 results.append(updated)
         return results
+
+    def resolve_price_review(
+        self,
+        listing_id: int,
+        choice: str,
+        custom_buyer_price_minor: int | None = None,
+    ) -> ListingRecord:
+        record = self.store.listing(listing_id)
+        if not record or record.state is not ListingState.PRICE_REVIEW:
+            raise ValueError("指定任务不是价格异常待确认任务")
+        if choice == "skip":
+            self.store.update_listing(record.id, state=ListingState.PAUSED)
+        elif choice == "strategy":
+            if (
+                record.strategy_seller_price_minor is None
+                or record.strategy_buyer_price_minor is None
+            ):
+                raise ValueError("任务缺少策略价格")
+            self.store.update_listing(
+                record.id,
+                state=ListingState.PLANNED,
+                seller_price_minor=record.strategy_seller_price_minor,
+                buyer_price_minor=record.strategy_buyer_price_minor,
+                price_source="strategy_confirmed",
+                error_message=None,
+            )
+        elif choice == "reference":
+            self.store.update_listing(
+                record.id,
+                state=ListingState.PLANNED,
+                price_source="age_reference_confirmed",
+                error_message=None,
+            )
+        elif choice == "custom":
+            if custom_buyer_price_minor is None:
+                raise ValueError("请输入自定义买家支付价格")
+            seller_price = seller_receive_for_buyer_pay(custom_buyer_price_minor)
+            self.store.update_listing(
+                record.id,
+                state=ListingState.PLANNED,
+                seller_price_minor=seller_price,
+                buyer_price_minor=buyer_pays_for_seller_receive(seller_price),
+                price_source="custom_confirmed",
+                error_message=None,
+            )
+        updated = self.store.listing(record.id)
+        if not updated:
+            raise ValueError("任务更新失败")
+        return updated
 
     async def reprice_active(
         self,
@@ -250,6 +398,7 @@ class ListingManager:
         profile_id, stages = self.stages(strategy_profile_id)
         first_stage = stages[0]
         resubmit_ids: list[int] = []
+        batch_id = uuid.uuid4().hex
         for listing_id in listing_ids:
             record = self.store.listing(listing_id)
             if not record or record.state is not ListingState.ACTIVE:
@@ -289,6 +438,14 @@ class ListingManager:
                     minimum_receive_minor=record.minimum_receive_minor,
                     current_lowest_minor=current_lowest,
                 )
+                self.store.create_reprice_history(
+                    batch_id=batch_id,
+                    listing_record_id=record.id,
+                    record=record,
+                    new_seller_price_minor=seller_price,
+                    new_buyer_price_minor=buyer_price,
+                    reason="manual",
+                )
                 await self.market.cancel_listing(record.steam_listing_id)
                 self.store.update_listing(
                     record.id,
@@ -306,6 +463,7 @@ class ListingManager:
                 resubmit_ids.append(record.id)
             except (PermissionError, RuntimeError) as exc:
                 self.store.update_listing(record.id, error_message=str(exc))
+                self.store.fail_reprice_history(record.id, str(exc))
         if resubmit_ids:
             return await self.execute(resubmit_ids, confirmation_text)
         return [
@@ -318,9 +476,10 @@ class ListingManager:
         remote = await self.market.active_listings()
         recent_sales = await self.market.recent_sales()
         imported = self.store.import_active_listings(remote)
+        reconciled = self.store.reconcile_pending_reprices()
         by_id = {str(item["listing_id"]): item for item in remote}
         unmatched = list(remote)
-        updated = imported
+        updated = imported + reconciled
         open_records = self.store.listings(
             [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
         )
@@ -349,6 +508,9 @@ class ListingManager:
                     active_since=now.isoformat(),
                     next_action_at=next_action.isoformat(),
                 )
+                self.store.confirm_reprice_history(
+                    record.id, str(match["listing_id"])
+                )
                 if match in unmatched:
                     unmatched.remove(match)
                 updated += 1
@@ -366,12 +528,14 @@ class ListingManager:
         """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
         remote = await self.market.active_listings()
         imported = self.store.import_active_listings(remote)
-        return SyncResult(listings_updated=imported)
+        reconciled = self.store.reconcile_pending_reprices()
+        return SyncResult(listings_updated=imported + reconciled)
 
     async def process_expired(self, currency: Currency) -> int:
         now = datetime.now(UTC)
         processed = 0
         resubmit_ids: list[int] = []
+        batch_id = uuid.uuid4().hex
         for record in self.store.listings([ListingState.ACTIVE]):
             if not record.next_action_at or record.next_action_at > now:
                 continue
@@ -386,7 +550,6 @@ class ListingManager:
             ):
                 self.store.update_listing(record.id, state=ListingState.PAUSED)
                 continue
-            await self.market.cancel_listing(record.steam_listing_id)
             await self.market.update_price_history(
                 record.appid, record.market_hash_name, currency
             )
@@ -407,6 +570,19 @@ class ListingManager:
                 minimum_receive_minor=record.minimum_receive_minor,
                 current_lowest_minor=current_lowest,
             )
+            self.store.create_reprice_history(
+                batch_id=batch_id,
+                listing_record_id=record.id,
+                record=record,
+                new_seller_price_minor=seller_price,
+                new_buyer_price_minor=buyer_price,
+                reason="age_timeout",
+            )
+            try:
+                await self.market.cancel_listing(record.steam_listing_id)
+            except (PermissionError, RuntimeError) as exc:
+                self.store.fail_reprice_history(record.id, str(exc))
+                raise
             self.store.update_listing(
                 record.id,
                 state=ListingState.PLANNED,

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,6 +16,7 @@ from app.core.models import Currency, InventoryAsset, SyncResult
 from app.services.steam_session import SteamSessionService, steam_session_service
 
 CURRENCY_IDS = {Currency.CNY: 23, Currency.INR: 24}
+logger = logging.getLogger(__name__)
 CURRENCY_SYMBOLS = {
     Currency.CNY: {"¥", "￥", "元"},
     Currency.INR: {"₹"},
@@ -609,7 +611,16 @@ class SteamMarketService:
                         "country": "CN" if currency is Currency.CNY else "IN",
                     },
                 )
-            except RuntimeError:
+            except RuntimeError as exc:
+                logger.warning(
+                    "Steam 实时最低价获取失败：appid=%s item=%s currency=%s "
+                    "retries=%s fallback=30天历史价格 error=%s",
+                    appid,
+                    market_hash_name,
+                    currency.value,
+                    settings.request_retries,
+                    exc,
+                )
                 return None
         value = str(payload.get("lowest_price", ""))
         cleaned = "".join(character for character in value if character.isdigit() or character in ".,")

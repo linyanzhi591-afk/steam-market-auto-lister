@@ -22,7 +22,9 @@ from app.core.models import (
     ListingState,
     PriceDecision,
     PricePoint,
+    PriceReviewRequest,
     PricingStrategy,
+    RepriceHistory,
     SessionActionResult,
     SessionStatus,
     StrategyProfile,
@@ -244,6 +246,23 @@ async def reprice_active_listings(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/listings/{listing_id}/resolve-price", response_model=ListingRecord)
+def resolve_listing_price(
+    listing_id: int, request: PriceReviewRequest
+) -> ListingRecord:
+    try:
+        return listing_manager.resolve_price_review(
+            listing_id, request.choice, request.custom_buyer_price_minor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/reprice-history", response_model=list[RepriceHistory])
+def reprice_history() -> list[RepriceHistory]:
+    return database.reprice_history()
 
 
 @router.post("/listings/process-expired")

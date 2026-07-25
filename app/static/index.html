@@ -55,6 +55,8 @@
           <label>当前策略<select id="strategy-profile-select"></select></label>
           <label>策略名称<input id="strategy-profile-name" maxlength="100" /></label>
           <label class="inline-check"><input id="strategy-is-default" type="checkbox" />设为默认策略</label>
+          <label class="inline-check"><input id="inventory-pressure-enabled" type="checkbox" />启用同款库存压力警告</label>
+          <label>同款库存压力阈值<input id="inventory-pressure-threshold" type="number" min="1" max="5000" value="50" /></label>
           <div class="actions">
             <button id="new-strategy" class="secondary" type="button">新建</button>
             <button id="duplicate-strategy" class="secondary" type="button">复制</button>
@@ -69,6 +71,22 @@
         <div id="strategy-stages" class="stage-list"></div>
         <div class="actions settings-footer">
           <button id="save-settings" type="button">保存币种设置</button>
+        </div>
+      </section>
+
+      <section class="panel view-main price-review-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">PRICE REVIEW</p>
+            <h2>价格异常待确认</h2>
+          </div>
+          <span class="subtle">同款调价参考与当前策略价相差超过20%，不会自动执行</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>物品</th><th>当前策略价</th><th>同款参考价</th><th>差异</th><th>操作</th></tr></thead>
+            <tbody id="price-review-body"><tr><td colspan="5">没有价格异常任务</td></tr></tbody>
+          </table>
         </div>
       </section>
 
@@ -127,8 +145,8 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
-            <tbody id="new-listings-body"><tr><td colspan="6">暂无新上架任务</td></tr></tbody>
+            <thead><tr><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
+            <tbody id="new-listings-body"><tr><td colspan="7">暂无新上架任务</td></tr></tbody>
           </table>
         </div>
       </section>

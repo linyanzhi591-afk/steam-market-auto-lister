@@ -14,6 +14,7 @@ from app.core.models import (
     ListingRecord,
     ListingState,
     PricingStrategy,
+    RepriceHistory,
     StageAction,
     StrategyProfile,
     StrategyProfileInput,
@@ -89,6 +90,11 @@ class Database:
                     steam_listing_id TEXT,
                     steam_listed_at TEXT,
                     error_message TEXT,
+                    price_source TEXT NOT NULL DEFAULT 'strategy',
+                    strategy_seller_price_minor INTEGER,
+                    strategy_buyer_price_minor INTEGER,
+                    reference_reprice_id INTEGER,
+                    price_difference_percent REAL,
                     active_since TEXT,
                     next_action_at TEXT,
                     created_at TEXT NOT NULL,
@@ -126,6 +132,28 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS reprice_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id TEXT NOT NULL,
+                    listing_record_id INTEGER,
+                    appid INTEGER NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    assetid TEXT NOT NULL,
+                    old_steam_listing_id TEXT NOT NULL,
+                    new_steam_listing_id TEXT,
+                    old_seller_price_minor INTEGER NOT NULL,
+                    old_buyer_price_minor INTEGER NOT NULL,
+                    new_seller_price_minor INTEGER NOT NULL,
+                    new_buyer_price_minor INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    submitted_at TEXT NOT NULL,
+                    confirmed_at TEXT,
+                    error_message TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_reprice_history_item
+                    ON reprice_history(appid, market_hash_name, status, confirmed_at);
                 """
             )
             defaults = {
@@ -135,6 +163,8 @@ class Database:
                 "robust_median_hours": "48",
                 "market_follow_hours": "24",
                 "fast_sell_hours": "24",
+                "inventory_pressure_enabled": "false",
+                "inventory_pressure_threshold": "50",
             }
             db.executemany(
                 "INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
@@ -153,6 +183,26 @@ class Database:
                 db.execute("ALTER TABLE listings ADD COLUMN error_message TEXT")
             if "steam_listed_at" not in columns:
                 db.execute("ALTER TABLE listings ADD COLUMN steam_listed_at TEXT")
+            listing_migrations = {
+                "price_source": "TEXT NOT NULL DEFAULT 'strategy'",
+                "strategy_seller_price_minor": "INTEGER",
+                "strategy_buyer_price_minor": "INTEGER",
+                "reference_reprice_id": "INTEGER",
+                "price_difference_percent": "REAL",
+            }
+            for name, definition in listing_migrations.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE listings ADD COLUMN {name} {definition}")
+            db.execute("DROP INDEX IF EXISTS idx_one_open_listing_per_asset")
+            db.execute(
+                """
+                CREATE UNIQUE INDEX idx_one_open_listing_per_asset
+                ON listings(assetid)
+                WHERE state IN (
+                    'planned', 'price_review', 'pending_confirmation', 'active'
+                )
+                """
+            )
             profile_count = db.execute("SELECT COUNT(*) FROM strategy_profiles").fetchone()[0]
             if profile_count == 0:
                 now = utc_now()
@@ -264,6 +314,22 @@ class Database:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self.connect() as db:
             return [dict(row) for row in db.execute(f"SELECT * FROM inventory_assets {where}")]
+
+    def item_exposure_count(self, appid: int, market_hash_name: str) -> int:
+        with self.connect() as db:
+            return int(
+                db.execute(
+                    """
+                    SELECT COUNT(*) FROM listings
+                    WHERE appid = ? AND market_hash_name = ?
+                      AND state IN (
+                        'planned', 'price_review',
+                        'pending_confirmation', 'active'
+                      )
+                    """,
+                    (appid, market_hash_name),
+                ).fetchone()[0]
+            )
 
     def blacklist(self) -> list[dict[str, object]]:
         with self.connect() as db:
@@ -395,7 +461,8 @@ class Database:
             db.execute(
                 """
                 UPDATE listings SET state = ?, updated_at = ?
-                WHERE appid = ? AND market_hash_name = ? AND state = ?
+                WHERE appid = ? AND market_hash_name = ?
+                  AND state IN (?, ?)
                 """,
                 (
                     ListingState.PAUSED.value,
@@ -403,6 +470,7 @@ class Database:
                     appid,
                     market_hash_name,
                     ListingState.PLANNED.value,
+                    ListingState.PRICE_REVIEW.value,
                 ),
             )
 
@@ -450,6 +518,13 @@ class Database:
         buyer_price_minor: int,
         minimum_receive_minor: int = 1,
         strategy_profile_id: int | None = None,
+        *,
+        state: ListingState = ListingState.PLANNED,
+        price_source: str = "strategy",
+        strategy_seller_price_minor: int | None = None,
+        strategy_buyer_price_minor: int | None = None,
+        reference_reprice_id: int | None = None,
+        price_difference_percent: float | None = None,
     ) -> int:
         now = utc_now()
         with self.connect() as db:
@@ -458,21 +533,28 @@ class Database:
                 INSERT INTO listings (
                     assetid, appid, contextid, market_hash_name, state, strategy,
                     strategy_profile_id, stage, seller_price_minor, buyer_price_minor,
-                    minimum_receive_minor,
+                    minimum_receive_minor, price_source,
+                    strategy_seller_price_minor, strategy_buyer_price_minor,
+                    reference_reprice_id, price_difference_percent,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset["assetid"],
                     asset["appid"],
                     asset["contextid"],
                     asset["market_hash_name"],
-                    ListingState.PLANNED,
+                    state,
                     strategy,
                     strategy_profile_id,
                     seller_price_minor,
                     buyer_price_minor,
                     minimum_receive_minor,
+                    price_source,
+                    strategy_seller_price_minor,
+                    strategy_buyer_price_minor,
+                    reference_reprice_id,
+                    price_difference_percent,
                     now,
                     now,
                 ),
@@ -620,6 +702,11 @@ class Database:
             "steam_listing_id",
             "steam_listed_at",
             "error_message",
+            "price_source",
+            "strategy_seller_price_minor",
+            "strategy_buyer_price_minor",
+            "reference_reprice_id",
+            "price_difference_percent",
             "active_since",
             "next_action_at",
         }
@@ -646,6 +733,150 @@ class Database:
                 "INSERT INTO audit_logs(action, subject, details, created_at) VALUES (?, ?, ?, ?)",
                 (action, subject, json.dumps(details, ensure_ascii=False), utc_now()),
             )
+
+    def create_reprice_history(
+        self,
+        *,
+        batch_id: str,
+        listing_record_id: int,
+        record: ListingRecord,
+        new_seller_price_minor: int,
+        new_buyer_price_minor: int,
+        reason: str,
+    ) -> int:
+        if not record.steam_listing_id:
+            raise ValueError("原挂单缺少 Steam Listing ID")
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO reprice_history(
+                    batch_id, listing_record_id, appid, market_hash_name, assetid,
+                    old_steam_listing_id, old_seller_price_minor,
+                    old_buyer_price_minor, new_seller_price_minor,
+                    new_buyer_price_minor, reason, status, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?)
+                """,
+                (
+                    batch_id,
+                    listing_record_id,
+                    record.appid,
+                    record.market_hash_name,
+                    record.assetid,
+                    record.steam_listing_id,
+                    record.seller_price_minor,
+                    record.buyer_price_minor,
+                    new_seller_price_minor,
+                    new_buyer_price_minor,
+                    reason,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def fail_reprice_history(self, listing_record_id: int, error: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE reprice_history
+                SET status = 'failed', error_message = ?
+                WHERE listing_record_id = ? AND status = 'waiting_confirmation'
+                """,
+                (error, listing_record_id),
+            )
+
+    def confirm_reprice_history(
+        self, listing_record_id: int, new_steam_listing_id: str
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE reprice_history
+                SET status = 'confirmed', new_steam_listing_id = ?,
+                    confirmed_at = ?, error_message = NULL
+                WHERE listing_record_id = ? AND status = 'waiting_confirmation'
+                """,
+                (new_steam_listing_id, utc_now(), listing_record_id),
+            )
+
+    def reconcile_pending_reprices(self) -> int:
+        """在重启后用当前 active 挂单确认尚未完成的调价历史。"""
+        confirmed = 0
+        with self.connect() as db:
+            pending = db.execute(
+                """
+                SELECT * FROM reprice_history
+                WHERE status = 'waiting_confirmation'
+                ORDER BY submitted_at
+                """
+            ).fetchall()
+            for history in pending:
+                match = db.execute(
+                    """
+                    SELECT steam_listing_id FROM listings
+                    WHERE state = 'active'
+                      AND appid = ? AND market_hash_name = ? AND assetid = ?
+                      AND buyer_price_minor = ?
+                      AND steam_listing_id IS NOT NULL
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (
+                        history["appid"],
+                        history["market_hash_name"],
+                        history["assetid"],
+                        history["new_buyer_price_minor"],
+                    ),
+                ).fetchone()
+                if not match:
+                    continue
+                db.execute(
+                    """
+                    UPDATE reprice_history
+                    SET status = 'confirmed', new_steam_listing_id = ?,
+                        confirmed_at = ?, error_message = NULL
+                    WHERE id = ?
+                    """,
+                    (match["steam_listing_id"], utc_now(), history["id"]),
+                )
+                confirmed += 1
+        return confirmed
+
+    def latest_active_age_reprice(
+        self, appid: int, market_hash_name: str
+    ) -> RepriceHistory | None:
+        with self.connect() as db:
+            latest = db.execute(
+                """
+                SELECT batch_id FROM reprice_history
+                WHERE appid = ? AND market_hash_name = ?
+                  AND reason = 'age_timeout' AND status = 'confirmed'
+                  AND new_steam_listing_id IN (
+                    SELECT steam_listing_id FROM listings WHERE state = 'active'
+                  )
+                ORDER BY confirmed_at DESC LIMIT 1
+                """,
+                (appid, market_hash_name),
+            ).fetchone()
+            if not latest:
+                return None
+            row = db.execute(
+                """
+                SELECT * FROM reprice_history
+                WHERE batch_id = ? AND status = 'confirmed'
+                  AND new_steam_listing_id IN (
+                    SELECT steam_listing_id FROM listings WHERE state = 'active'
+                  )
+                ORDER BY new_buyer_price_minor ASC LIMIT 1
+                """,
+                (latest["batch_id"],),
+            ).fetchone()
+        return RepriceHistory.model_validate(dict(row)) if row else None
+
+    def reprice_history(self) -> list[RepriceHistory]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM reprice_history ORDER BY id DESC"
+            ).fetchall()
+        return [RepriceHistory.model_validate(dict(row)) for row in rows]
 
     def counts(self) -> dict[str, int]:
         with self.connect() as db:

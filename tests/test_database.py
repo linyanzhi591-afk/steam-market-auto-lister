@@ -180,3 +180,50 @@ def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     assert listing.state is ListingState.ACTIVE
     assert listing.steam_listing_id == "9001"
     assert listing.strategy_profile_id == database.strategy_profile().id
+
+
+def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="测试",
+        market_hash_name="Test Item",
+        marketable=True,
+        tradable=True,
+    )
+    database.replace_inventory([asset])
+    listing_id = database.create_listing(
+        database.inventory(marketable_only=True)[0],
+        PricingStrategy.TREND,
+        1000,
+        1150,
+    )
+    database.update_listing(
+        listing_id,
+        state=ListingState.ACTIVE,
+        steam_listing_id="old-listing",
+    )
+    record = database.listing(listing_id)
+    assert record is not None
+    database.create_reprice_history(
+        batch_id="batch-one",
+        listing_record_id=listing_id,
+        record=record,
+        new_seller_price_minor=900,
+        new_buyer_price_minor=1035,
+        reason="age_timeout",
+    )
+    database.update_listing(
+        listing_id,
+        steam_listing_id="new-listing",
+        seller_price_minor=900,
+        buyer_price_minor=1035,
+    )
+    assert database.reconcile_pending_reprices() == 1
+    reference = database.latest_active_age_reprice(730, "Test Item")
+    assert reference is not None
+    assert reference.new_buyer_price_minor == 1035
+    assert reference.status == "confirmed"

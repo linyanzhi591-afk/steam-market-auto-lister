@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,10 +12,12 @@ from app.core.config import settings
 from app.core.database import database
 from app.services.listing_manager import listing_manager
 from app.services.scheduler import background_scheduler
+from app.services.steam_market import steam_market_service
 from app.services.steam_session import steam_session_service
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -26,10 +29,18 @@ async def lifespan(_app: FastAPI):
         database.save_currency(session.wallet_currency)
     if session.state.value == "logged_in":
         try:
+            inventory_result = await steam_market_service.scan_inventory()
+            if inventory_result.errors:
+                logger.warning(
+                    "Steam 启动库存同步部分失败：%s",
+                    "；".join(inventory_result.errors),
+                )
+        except (OSError, PlaywrightError, RuntimeError) as exc:
+            logger.warning("Steam 启动库存同步失败：%s", exc)
+        try:
             await listing_manager.refresh_current_listings()
-        except (OSError, PlaywrightError, RuntimeError):
-            # 启动刷新失败时保持空列表，用户可在界面手动重试。
-            pass
+        except (OSError, PlaywrightError, RuntimeError) as exc:
+            logger.warning("Steam 启动当前在售同步失败：%s", exc)
     background_scheduler.start()
     yield
     await background_scheduler.stop()

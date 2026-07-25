@@ -19,6 +19,7 @@ class SessionState(StrEnum):
 
 class ListingState(StrEnum):
     PLANNED = "planned"
+    PRICE_REVIEW = "price_review"
     PENDING_CONFIRMATION = "pending_confirmation"
     ACTIVE = "active"
     SOLD = "sold"
@@ -85,6 +86,11 @@ class ListingRecord(BaseModel):
     steam_listing_id: str | None = None
     steam_listed_at: str | None = None
     error_message: str | None = None
+    price_source: str = "strategy"
+    strategy_seller_price_minor: int | None = None
+    strategy_buyer_price_minor: int | None = None
+    reference_reprice_id: int | None = None
+    price_difference_percent: float | None = None
     active_since: datetime | None = None
     next_action_at: datetime | None = None
     created_at: datetime
@@ -114,6 +120,31 @@ class ListingRepriceRequest(BaseModel):
     confirmation_text: str
 
 
+class PriceReviewRequest(BaseModel):
+    choice: str = Field(pattern="^(reference|strategy|custom|skip)$")
+    custom_buyer_price_minor: int | None = Field(default=None, ge=3)
+
+
+class RepriceHistory(BaseModel):
+    id: int
+    batch_id: str
+    listing_record_id: int | None = None
+    appid: int
+    market_hash_name: str
+    assetid: str
+    old_steam_listing_id: str
+    new_steam_listing_id: str | None = None
+    old_seller_price_minor: int
+    old_buyer_price_minor: int
+    new_seller_price_minor: int
+    new_buyer_price_minor: int
+    reason: str
+    status: str
+    submitted_at: datetime
+    confirmed_at: datetime | None = None
+    error_message: str | None = None
+
+
 class SyncResult(BaseModel):
     inventory_count: int = 0
     marketable_count: int = 0
@@ -140,6 +171,8 @@ class AppSettings(BaseModel):
     robust_median_hours: int = Field(default=48, ge=1, le=720)
     market_follow_hours: int = Field(default=24, ge=1, le=720)
     fast_sell_hours: int = Field(default=24, ge=1, le=720)
+    inventory_pressure_enabled: bool = False
+    inventory_pressure_threshold: int = Field(default=50, ge=1, le=5000)
 
 
 class StrategyStage(BaseModel):

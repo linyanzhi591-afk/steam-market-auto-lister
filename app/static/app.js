@@ -136,6 +136,14 @@ const pricingSourceLabels = {
   trend: "趋势预测价",
   fast_sell: "快速出售价",
 };
+const listingPriceSourceLabels = {
+  strategy: "当前策略计算",
+  age_reprice_reference: "同款时间调价参考",
+  age_reference_confirmed: "已确认同款参考价",
+  strategy_confirmed: "已确认策略价",
+  custom_confirmed: "用户自定义价",
+  strategy_reference_expired: "参考失效，改用策略价",
+};
 
 function defaultStage() {
   return {
@@ -221,6 +229,7 @@ function collectStrategyEditor() {
 
 function renderListings(items) {
   currentListings = items;
+  const priceReviews = items.filter((item) => item.state === "price_review");
   const newListings = items.filter((item) =>
     ["planned", "pending_confirmation", "failed"].includes(item.state)
   );
@@ -254,12 +263,27 @@ function renderListings(items) {
   $("#new-listings-body").innerHTML = newListings.length
     ? newListings.map((item) => `<tr>
         <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
+        <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
         <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
           item.error_message || (item.state === "pending_confirmation" ? "等待 Steam 手机确认" : "")
         )}</td>
       </tr>`).join("")
-    : '<tr><td colspan="6">暂无新上架任务</td></tr>';
+    : '<tr><td colspan="7">暂无新上架任务</td></tr>';
+  $("#price-review-body").innerHTML = priceReviews.length
+    ? priceReviews.map((item) => `<tr>
+        <td>${escapeHtml(item.market_hash_name)}</td>
+        <td>${money(item.strategy_buyer_price_minor || 0)}</td>
+        <td>${money(item.buyer_price_minor)}</td>
+        <td class="error-text">${Number(item.price_difference_percent || 0).toFixed(2)}%</td>
+        <td><div class="actions">
+          <button class="review-choice" data-listing-id="${item.id}" data-choice="reference" type="button">使用参考价</button>
+          <button class="review-choice secondary" data-listing-id="${item.id}" data-choice="strategy" type="button">使用策略价</button>
+          <button class="review-choice secondary" data-listing-id="${item.id}" data-choice="custom" type="button">自定义</button>
+          <button class="review-choice danger" data-listing-id="${item.id}" data-choice="skip" type="button">暂不处理</button>
+        </div></td>
+      </tr>`).join("")
+    : '<tr><td colspan="5">没有价格异常任务</td></tr>';
   $("#active-listings-body").innerHTML = groupedActiveListings.length
     ? groupedActiveListings.map((item, index) => `<tr>
         <td><input class="active-select" type="checkbox" data-group-index="${index}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
@@ -299,6 +323,8 @@ async function load() {
     $("#pending").textContent = dashboard.pending_confirmation;
     $("#active").textContent = dashboard.active;
     currentAppSettings = appSettings;
+    $("#inventory-pressure-enabled").checked = appSettings.inventory_pressure_enabled;
+    $("#inventory-pressure-threshold").value = appSettings.inventory_pressure_threshold;
     strategyProfiles = profiles;
     const preferred = strategyProfiles.find((profile) => profile.is_default) || strategyProfiles[0];
     if (!editingStrategy || !strategyProfiles.some((profile) => profile.id === editingStrategy.id)) {
@@ -395,6 +421,28 @@ $("#select-all-active").addEventListener("change", (event) => {
     checkbox.checked = event.target.checked;
   });
 });
+$("#price-review-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".review-choice");
+  if (!button) return;
+  await busy(button, async () => {
+    const choice = button.dataset.choice;
+    let customBuyerPriceMinor = null;
+    if (choice === "custom") {
+      const value = window.prompt("输入自定义买家支付价格");
+      if (!value) return;
+      customBuyerPriceMinor = Math.round(Number(value) * 100);
+      if (!Number.isFinite(customBuyerPriceMinor) || customBuyerPriceMinor < 3) {
+        throw new Error("自定义价格无效");
+      }
+    }
+    await post(`/api/listings/${button.dataset.listingId}/resolve-price`, {
+      choice,
+      custom_buyer_price_minor: customBuyerPriceMinor,
+    });
+    toast(choice === "skip" ? "任务已暂不处理" : "价格已确认并转入新上架任务");
+    await load();
+  });
+});
 $("#active-listings-body").addEventListener("change", () => {
   const checkboxes = Array.from(document.querySelectorAll(".active-select"));
   const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
@@ -482,6 +530,8 @@ $("#save-settings").addEventListener("click", () => busy($("#save-settings"), as
   const saved = await put("/api/settings", {
     ...currentAppSettings,
     currency: $("#currency").value,
+    inventory_pressure_enabled: $("#inventory-pressure-enabled").checked,
+    inventory_pressure_threshold: Number($("#inventory-pressure-threshold").value),
   });
   currentAppSettings = saved;
   toast("设置已保存");

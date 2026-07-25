@@ -25,6 +25,10 @@
 - 自由组合多阶段策略：算法、百分比/固定调价、绝对底价、中位价保护、持续时间和到期动作均可配置。
 - 同步 Steam“我的在售”，自动导入并跟踪不是由本程序创建的现有挂单。
 - 当前在售同步保存并展示 Steam 返回的上架日期；Steam 未返回时明确显示“Steam 未提供”。
+- 永久保存调价操作历史；重新上架经手机确认并同步为 active 后才标记调价生效。
+- 新库存可继承最近一次仍在售的时间调价批次最低价；与当前策略价相差超过20%时进入独立人工确认区。
+- 登录自动恢复后自动同步一次库存和当前在售；失败仅记录脱敏错误，不阻止启动。
+- 同款库存压力警告默认关闭，默认阈值为50件。
 - 新上架任务与 Steam 当前在售分区显示；当前在售支持多选、全选并按指定策略调价。
 - Steam 当前在售按 AppID 和饰品名称折叠；显示数量与价格区间，选择一组会调整组内全部挂单。
 - Steam 提交失败时在任务结果栏保留具体原因，失败任务可直接重试。
@@ -156,6 +160,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 - `POST /api/listings/plan`
 - `POST /api/listings/execute`
 - `POST /api/listings/reprice`
+- `POST /api/listings/{id}/resolve-price`
+- `GET /api/reprice-history`
 - `POST /api/sync/listings`
 - `GET /api/strategy-profiles`
 - `POST /api/strategy-profiles`
