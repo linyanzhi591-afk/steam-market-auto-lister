@@ -29,16 +29,11 @@ def _as_points(
     rows: list[sqlite3.Row],
     fee_options: dict[str, float | int] | None = None,
 ) -> list[PricePoint]:
+    del fee_options
     return [
         PricePoint(
             timestamp=datetime.fromisoformat(str(row["timestamp"])),
-            price_minor=(
-                seller_receive_for_buyer_pay(
-                    int(row["price_minor"]), **(fee_options or {})
-                )
-                if int(row["price_minor"]) >= 3
-                else 1
-            ),
+            price_minor=int(row["price_minor"]),
             volume=int(row["volume"]),
         )
         for row in rows
@@ -60,12 +55,20 @@ class ListingManager:
         if not callable(status_method):
             return {}
         status = status_method()
+        minimum_total_fee = {
+            Currency.INR: 200,
+            Currency.CNY: 14,
+        }.get(status.wallet_currency, 2)
+        publisher_fee_minimum = 1
         return {
             "steam_fee_rate": status.wallet_fee_percent,
-            "steam_fee_minimum": status.wallet_fee_minimum,
+            "steam_fee_minimum": max(
+                0, minimum_total_fee - publisher_fee_minimum
+            ),
             "steam_fee_base": status.wallet_fee_base,
             "publisher_fee_rate": status.wallet_publisher_fee_percent_default,
-            "publisher_fee_minimum": 1,
+            "publisher_fee_minimum": publisher_fee_minimum,
+            "minimum_total_fee": minimum_total_fee,
         }
 
     def stages(
@@ -90,7 +93,7 @@ class ListingManager:
         stage: StrategyStage,
         points: list[PricePoint],
         *,
-        minimum_receive_minor: int,
+        minimum_buyer_price_minor: int,
         current_lowest_minor: int | None = None,
     ) -> tuple[int, int]:
         decision = calculate_price(
@@ -101,22 +104,28 @@ class ListingManager:
         )
         median_decision = calculate_price(PricingStrategy.ROBUST_MEDIAN, points)
         adjusted = round(
-            decision.seller_receives_minor * (1 + stage.adjustment_percent / 100)
+            decision.price_minor * (1 + stage.adjustment_percent / 100)
         )
         adjusted += stage.adjustment_fixed_minor
         median_floor = round(
-            median_decision.seller_receives_minor * stage.median_floor_percent / 100
+            median_decision.price_minor * stage.median_floor_percent / 100
         )
-        seller_price = max(
+        fee_options = self.fee_options()
+        buyer_target = max(
             1,
+            1 + int(fee_options.get("minimum_total_fee", 2)),
             adjusted,
-            minimum_receive_minor,
+            minimum_buyer_price_minor,
             stage.absolute_floor_minor,
             median_floor,
         )
-        return seller_price, buyer_pays_for_seller_receive(
-            seller_price, **self.fee_options()
+        seller_price = seller_receive_for_buyer_pay(
+            buyer_target, **fee_options
         )
+        buyer_price = buyer_pays_for_seller_receive(
+            seller_price, **fee_options
+        )
+        return seller_price, buyer_price
 
     async def current_lowest_for_stage(
         self,
@@ -141,13 +150,18 @@ class ListingManager:
         *,
         strategy_profile_id: int | None = None,
         assetids: list[str] | None = None,
-        minimum_receive_minor: int = 1,
+        minimum_buyer_price_minor: int = 3,
         maximum_buyer_price_minor: int | None = None,
         maximum_items: int | None = None,
         excluded_names: list[str] | None = None,
     ) -> list[ListingRecord]:
         profile_id, stages = self.stages(strategy_profile_id, strategy)
         first_stage = stages[0]
+        fee_options = self.fee_options()
+        minimum_buyer_price_minor = max(
+            minimum_buyer_price_minor,
+            1 + int(fee_options.get("minimum_total_fee", 2)),
+        )
         excluded = {name.casefold() for name in (excluded_names or [])}
         selected = [
             asset
@@ -184,7 +198,7 @@ class ListingManager:
             seller_price, buyer_price = self.stage_price(
                 first_stage,
                 points,
-                minimum_receive_minor=minimum_receive_minor,
+                minimum_buyer_price_minor=minimum_buyer_price_minor,
                 current_lowest_minor=current_lowest,
             )
             strategy_seller_price = seller_price
@@ -199,19 +213,22 @@ class ListingManager:
             if reference:
                 median_price = calculate_price(
                     PricingStrategy.ROBUST_MEDIAN, points
-                ).seller_receives_minor
+                ).price_minor
                 median_floor = round(
                     median_price * first_stage.median_floor_percent / 100
                 )
-                seller_price = max(
+                buyer_price = max(
                     1,
-                    reference.new_seller_price_minor,
-                    minimum_receive_minor,
+                    reference.new_buyer_price_minor,
+                    minimum_buyer_price_minor,
                     first_stage.absolute_floor_minor,
                     median_floor,
                 )
+                seller_price = seller_receive_for_buyer_pay(
+                    buyer_price, **fee_options
+                )
                 buyer_price = buyer_pays_for_seller_receive(
-                    seller_price, **self.fee_options()
+                    seller_price, **fee_options
                 )
                 price_source = "age_reprice_reference"
                 reference_reprice_id = reference.id
@@ -231,7 +248,7 @@ class ListingManager:
                     first_stage.pricing_source,
                     seller_price,
                     buyer_price,
-                    minimum_receive_minor,
+                    minimum_buyer_price_minor,
                     profile_id,
                     state=state,
                     price_source=price_source,
@@ -291,21 +308,31 @@ class ListingManager:
                     record.appid, record.market_hash_name
                 )
                 if not reference:
-                    if (
-                        record.strategy_seller_price_minor is not None
-                        and record.strategy_buyer_price_minor is not None
-                    ):
+                    if record.strategy_buyer_price_minor is not None:
+                        strategy_seller_price = seller_receive_for_buyer_pay(
+                            record.strategy_buyer_price_minor,
+                            **self.fee_options(),
+                        )
                         self.store.update_listing(
                             record.id,
-                            seller_price_minor=record.strategy_seller_price_minor,
-                            buyer_price_minor=record.strategy_buyer_price_minor,
+                            seller_price_minor=strategy_seller_price,
+                            buyer_price_minor=buyer_pays_for_seller_receive(
+                                strategy_seller_price, **self.fee_options()
+                            ),
                             price_source="strategy_reference_expired",
                             reference_reprice_id=None,
                         )
                 else:
-                    seller_price = max(
-                        reference.new_seller_price_minor,
-                        record.minimum_receive_minor,
+                    buyer_price = max(
+                        reference.new_buyer_price_minor,
+                        record.minimum_buyer_price_minor,
+                        1
+                        + int(
+                            self.fee_options().get("minimum_total_fee", 2)
+                        ),
+                    )
+                    seller_price = seller_receive_for_buyer_pay(
+                        buyer_price, **self.fee_options()
                     )
                     buyer_price = buyer_pays_for_seller_receive(
                         seller_price, **self.fee_options()
@@ -374,16 +401,18 @@ class ListingManager:
         if choice == "skip":
             self.store.update_listing(record.id, state=ListingState.PAUSED)
         elif choice == "strategy":
-            if (
-                record.strategy_seller_price_minor is None
-                or record.strategy_buyer_price_minor is None
-            ):
+            if record.strategy_buyer_price_minor is None:
                 raise ValueError("任务缺少策略价格")
+            seller_price = seller_receive_for_buyer_pay(
+                record.strategy_buyer_price_minor, **self.fee_options()
+            )
             self.store.update_listing(
                 record.id,
                 state=ListingState.PLANNED,
-                seller_price_minor=record.strategy_seller_price_minor,
-                buyer_price_minor=record.strategy_buyer_price_minor,
+                seller_price_minor=seller_price,
+                buyer_price_minor=buyer_pays_for_seller_receive(
+                    seller_price, **self.fee_options()
+                ),
                 price_source="strategy_confirmed",
                 error_message=None,
             )
@@ -494,7 +523,7 @@ class ListingManager:
                 seller_price, buyer_price = self.stage_price(
                     first_stage,
                     points,
-                    minimum_receive_minor=record.minimum_receive_minor,
+                    minimum_buyer_price_minor=record.minimum_buyer_price_minor,
                     current_lowest_minor=current_lowest,
                 )
                 self.store.create_reprice_history(
@@ -629,7 +658,7 @@ class ListingManager:
             seller_price, buyer_price = self.stage_price(
                 next_stage,
                 points,
-                minimum_receive_minor=record.minimum_receive_minor,
+                minimum_buyer_price_minor=record.minimum_buyer_price_minor,
                 current_lowest_minor=current_lowest,
             )
             self.store.create_reprice_history(

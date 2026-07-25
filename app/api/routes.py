@@ -190,7 +190,7 @@ async def create_listing_plans(request: ListingPlanRequest) -> list[ListingRecor
             request.currency,
             strategy_profile_id=request.strategy_profile_id,
             assetids=request.assetids,
-            minimum_receive_minor=request.minimum_receive_minor,
+            minimum_buyer_price_minor=request.minimum_buyer_price_minor,
             maximum_buyer_price_minor=request.maximum_buyer_price_minor,
             maximum_items=request.maximum_items,
             excluded_names=request.excluded_names,

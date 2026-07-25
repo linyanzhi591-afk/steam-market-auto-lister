@@ -103,7 +103,7 @@
         </div>
         <div class="plan-bar">
           <select id="plan-strategy"></select>
-          <label>最低到账 <input id="minimum-price" type="number" min="0.01" step="0.01" value="0.01" /></label>
+          <label>最低上架价 <input id="minimum-price" type="number" min="0.01" step="0.01" value="0.15" /></label>
           <label>单件支付上限 <input id="maximum-price" type="number" min="0.03" step="0.01" value="1000" /></label>
           <label>批次上限 <input id="maximum-items" type="number" min="1" max="5000" value="2000" /></label>
           <button id="create-plans" type="button">为选择的库存生成计划</button>
@@ -146,7 +146,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th><input id="select-all-plans" type="checkbox" aria-label="全选可取消任务" /></th><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>卖家到账</th><th>买家支付</th><th>结果/失败原因</th></tr></thead>
+            <thead><tr><th><input id="select-all-plans" type="checkbox" aria-label="全选可取消任务" /></th><th>状态</th><th>物品</th><th>策略</th><th>价格来源</th><th>上架价</th><th>结果/失败原因</th></tr></thead>
             <tbody id="new-listings-body"><tr><td colspan="8">暂无新上架任务</td></tr></tbody>
           </table>
         </div>
@@ -166,7 +166,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th><input id="select-all-active" type="checkbox" aria-label="全选当前在售" /></th><th>物品</th><th>数量</th><th>策略</th><th>卖家到账</th><th>买家支付</th><th>最早上架时间</th><th>最近下次动作</th><th>结果</th></tr></thead>
+            <thead><tr><th><input id="select-all-active" type="checkbox" aria-label="全选当前在售" /></th><th>物品</th><th>数量</th><th>策略</th><th>上架价</th><th>最早上架时间</th><th>最近下次动作</th><th>结果</th></tr></thead>
             <tbody id="active-listings-body"><tr><td colspan="9">尚未同步当前在售</td></tr></tbody>
           </table>
         </div>

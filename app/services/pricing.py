@@ -12,6 +12,7 @@ def buyer_pays_for_seller_receive(
     steam_fee_minimum: int = 1,
     steam_fee_base: int = 0,
     publisher_fee_minimum: int = 1,
+    minimum_total_fee: int = 2,
 ) -> int:
     """按 Steam 最小费用及向下取整规则估算买家支付金额。"""
     if seller_receive_minor < 1:
@@ -27,6 +28,8 @@ def buyer_pays_for_seller_receive(
         if publisher_fee_rate > 0
         else 0
     )
+    if steam_fee + publisher_fee < minimum_total_fee:
+        steam_fee += minimum_total_fee - steam_fee - publisher_fee
     return seller_receive_minor + steam_fee + publisher_fee
 
 
@@ -38,9 +41,10 @@ def seller_receive_for_buyer_pay(
     steam_fee_minimum: int = 1,
     steam_fee_base: int = 0,
     publisher_fee_minimum: int = 1,
+    minimum_total_fee: int = 2,
 ) -> int:
     """用整数搜索反算不超过买家支付价的最大卖家到账金额。"""
-    if buyer_pay_minor < 3:
+    if buyer_pay_minor < 1 + minimum_total_fee:
         raise ValueError("买家支付金额过低")
     low, high = 1, buyer_pay_minor
     while low <= high:
@@ -52,6 +56,7 @@ def seller_receive_for_buyer_pay(
             steam_fee_minimum=steam_fee_minimum,
             steam_fee_base=steam_fee_base,
             publisher_fee_minimum=publisher_fee_minimum,
+            minimum_total_fee=minimum_total_fee,
         ) <= buyer_pay_minor:
             low = middle + 1
         else:
@@ -95,8 +100,8 @@ def _decision(
     return PriceDecision(
         strategy=strategy,
         price_minor=max(1, price),
-        seller_receives_minor=max(1, price),
-        buyer_pays_minor=buyer_pays_for_seller_receive(max(1, price)),
+        seller_receives_minor=0,
+        buyer_pays_minor=max(1, price),
         confidence=_confidence(points),
         reason=reason,
     )
@@ -125,10 +130,10 @@ def market_follow(
         raise ValueError("最近 30 天没有有效成交数据")
     reference = _weighted_median(cleaned)
     if current_lowest_minor and current_lowest_minor > 2:
-        current_seller = seller_receive_for_buyer_pay(
-            current_lowest_minor - 1, **(fee_options or {})
+        price = max(
+            int(reference * 0.85),
+            min(reference, current_lowest_minor - 1),
         )
-        price = max(int(reference * 0.85), min(reference, current_seller))
         reason = "参考 30 天中位价，并比当前最低买家支付价低一个最小单位"
     else:
         price = reference
@@ -191,12 +196,7 @@ def fast_sell(
     low_quartile = prices[len(prices) // 4]
     target = low_quartile
     if current_lowest_minor and current_lowest_minor > 2:
-        target = min(
-            target,
-            seller_receive_for_buyer_pay(
-                current_lowest_minor - 1, **(fee_options or {})
-            ),
-        )
+        target = min(target, current_lowest_minor - 1)
     return _decision(
         PricingStrategy.FAST_SELL,
         target,

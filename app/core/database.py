@@ -86,7 +86,7 @@ class Database:
                     stage INTEGER NOT NULL DEFAULT 0,
                     seller_price_minor INTEGER NOT NULL,
                     buyer_price_minor INTEGER NOT NULL,
-                    minimum_receive_minor INTEGER NOT NULL DEFAULT 1,
+                    minimum_buyer_price_minor INTEGER NOT NULL DEFAULT 1,
                     steam_listing_id TEXT,
                     steam_listed_at TEXT,
                     error_message TEXT,
@@ -173,10 +173,14 @@ class Database:
             columns = {
                 row["name"] for row in db.execute("PRAGMA table_info(listings)").fetchall()
             }
-            if "minimum_receive_minor" not in columns:
+            if "minimum_buyer_price_minor" not in columns:
                 db.execute(
-                    "ALTER TABLE listings ADD COLUMN minimum_receive_minor INTEGER NOT NULL DEFAULT 1"
+                    "ALTER TABLE listings ADD COLUMN minimum_buyer_price_minor INTEGER NOT NULL DEFAULT 1"
                 )
+                if "minimum_receive_minor" in columns:
+                    db.execute(
+                        "UPDATE listings SET minimum_buyer_price_minor = minimum_receive_minor"
+                    )
             if "strategy_profile_id" not in columns:
                 db.execute("ALTER TABLE listings ADD COLUMN strategy_profile_id INTEGER")
             if "error_message" not in columns:
@@ -516,7 +520,7 @@ class Database:
         strategy: PricingStrategy,
         seller_price_minor: int,
         buyer_price_minor: int,
-        minimum_receive_minor: int = 1,
+        minimum_buyer_price_minor: int = 1,
         strategy_profile_id: int | None = None,
         *,
         state: ListingState = ListingState.PLANNED,
@@ -533,7 +537,7 @@ class Database:
                 INSERT INTO listings (
                     assetid, appid, contextid, market_hash_name, state, strategy,
                     strategy_profile_id, stage, seller_price_minor, buyer_price_minor,
-                    minimum_receive_minor, price_source,
+                    minimum_buyer_price_minor, price_source,
                     strategy_seller_price_minor, strategy_buyer_price_minor,
                     reference_reprice_id, price_difference_percent,
                     created_at, updated_at
@@ -549,7 +553,7 @@ class Database:
                     strategy_profile_id,
                     seller_price_minor,
                     buyer_price_minor,
-                    minimum_receive_minor,
+                    minimum_buyer_price_minor,
                     price_source,
                     strategy_seller_price_minor,
                     strategy_buyer_price_minor,
@@ -603,12 +607,17 @@ class Database:
                             buyer_price = round(float(numeric) * 100)
                         except ValueError:
                             buyer_price = 0
+                fee_values = fee_options or {}
+                minimum_buyer_price = 1 + int(
+                    fee_values.get("minimum_total_fee", 2)
+                )
+                buyer_price = max(buyer_price, minimum_buyer_price)
                 seller_price = max(1, buyer_price)
-                if buyer_price >= 3:
+                if buyer_price >= minimum_buyer_price:
                     from app.services.pricing import seller_receive_for_buyer_pay
 
                     seller_price = seller_receive_for_buyer_pay(
-                        buyer_price, **(fee_options or {})
+                        buyer_price, **fee_values
                     )
                 if existing:
                     db.execute(
@@ -652,10 +661,10 @@ class Database:
                             assetid, appid, contextid, market_hash_name, state,
                             strategy, strategy_profile_id, stage,
                             seller_price_minor, buyer_price_minor,
-                            minimum_receive_minor, steam_listing_id,
+                            minimum_buyer_price_minor, steam_listing_id,
                             steam_listed_at, active_since, next_action_at,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             assetid,
@@ -667,6 +676,7 @@ class Database:
                             profile.id,
                             seller_price,
                             max(buyer_price, seller_price),
+                            minimum_buyer_price,
                             steam_listing_id,
                             str(item.get("listed_at") or "") or None,
                             now.isoformat(),
@@ -704,7 +714,7 @@ class Database:
             "stage",
             "seller_price_minor",
             "buyer_price_minor",
-            "minimum_receive_minor",
+            "minimum_buyer_price_minor",
             "steam_listing_id",
             "steam_listed_at",
             "error_message",

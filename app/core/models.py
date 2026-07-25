@@ -82,7 +82,7 @@ class ListingRecord(BaseModel):
     stage: int
     seller_price_minor: int
     buyer_price_minor: int
-    minimum_receive_minor: int = 1
+    minimum_buyer_price_minor: int = 1
     steam_listing_id: str | None = None
     steam_listed_at: str | None = None
     error_message: str | None = None
@@ -102,7 +102,7 @@ class ListingPlanRequest(BaseModel):
     strategy: PricingStrategy = PricingStrategy.ROBUST_MEDIAN
     strategy_profile_id: int | None = None
     currency: Currency = Currency.CNY
-    minimum_receive_minor: int = Field(default=1, ge=1)
+    minimum_buyer_price_minor: int = Field(default=1, ge=1)
     maximum_buyer_price_minor: int | None = Field(default=None, ge=3)
     maximum_items: int | None = Field(default=None, ge=1, le=5000)
     excluded_names: list[str] = Field(default_factory=list)

@@ -44,13 +44,13 @@ def test_stage_adjustment_and_floor_are_applied() -> None:
         duration_hours=24,
     )
     seller_price, buyer_price = manager.stage_price(
-        stage, points, minimum_receive_minor=1
+        stage, points, minimum_buyer_price_minor=1
     )
-    assert seller_price == 1200
-    assert buyer_price == 1380
+    assert seller_price == 1044
+    assert buyer_price == 1200
 
 
-def test_history_buyer_price_is_converted_to_seller_receive() -> None:
+def test_history_keeps_buyer_facing_market_price() -> None:
     points = _as_points(
         [
             {
@@ -60,7 +60,7 @@ def test_history_buyer_price_is_converted_to_seller_receive() -> None:
             }
         ]
     )
-    assert points[0].price_minor == 1000
+    assert points[0].price_minor == 1150
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:
@@ -78,7 +78,7 @@ def test_fast_sell_uses_current_lowest_market_price() -> None:
     seller_price, buyer_price = manager.stage_price(
         stage,
         points,
-        minimum_receive_minor=1,
+        minimum_buyer_price_minor=1,
         current_lowest_minor=920,
     )
     assert buyer_price <= 919

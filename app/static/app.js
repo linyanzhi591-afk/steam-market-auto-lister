@@ -196,7 +196,7 @@ function renderStrategyEditor(profile) {
         </select></label>
         <label>百分比调整<input data-field="adjustment_percent" type="number" step="0.1" min="-90" max="500" value="${stage.adjustment_percent}" /></label>
         <label>固定金额调整<input data-field="adjustment_fixed" type="number" step="0.01" value="${stage.adjustment_fixed_minor / 100}" /></label>
-        <label>绝对到账底价<input data-field="absolute_floor" type="number" min="0.01" step="0.01" value="${stage.absolute_floor_minor / 100}" /></label>
+        <label>绝对上架底价<input data-field="absolute_floor" type="number" min="0.01" step="0.01" value="${stage.absolute_floor_minor / 100}" /></label>
         <label>中位价底线比例<input data-field="median_floor_percent" type="number" min="0" max="300" step="0.1" value="${stage.median_floor_percent}" /></label>
         <label>持续时间（小时）<input data-field="duration_hours" type="number" min="1" max="720" value="${stage.duration_hours}" /></label>
         <label>超时动作<select data-field="action_after_timeout">
@@ -240,7 +240,6 @@ function renderListings(items) {
     if (current) {
       current.listingIds.push(item.id);
       current.strategies.add(item.strategy);
-      current.sellerPrices.push(item.seller_price_minor);
       current.buyerPrices.push(item.buyer_price_minor);
       current.steamListedTimes.push(item.steam_listed_at);
       current.nextActionTimes.push(item.next_action_at);
@@ -251,7 +250,6 @@ function renderListings(items) {
         market_hash_name: item.market_hash_name,
         listingIds: [item.id],
         strategies: new Set([item.strategy]),
-        sellerPrices: [item.seller_price_minor],
         buyerPrices: [item.buyer_price_minor],
         steamListedTimes: [item.steam_listed_at],
         nextActionTimes: [item.next_action_at],
@@ -267,12 +265,12 @@ function renderListings(items) {
           aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
         <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
-        <td>${money(item.seller_price_minor)}</td><td>${money(item.buyer_price_minor)}</td>
+        <td>${money(item.buyer_price_minor)}</td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
           item.error_message || (item.state === "pending_confirmation" ? "等待 Steam 手机确认" : "")
         )}</td>
       </tr>`).join("")
-    : '<tr><td colspan="8">暂无新上架任务</td></tr>';
+    : '<tr><td colspan="7">暂无新上架任务</td></tr>';
   $("#select-all-plans").checked = false;
   $("#select-all-plans").indeterminate = false;
   $("#price-review-body").innerHTML = priceReviews.length
@@ -295,14 +293,14 @@ function renderListings(items) {
         <td>${escapeHtml(item.market_hash_name)}</td>
         <td>${item.listingIds.length}</td>
         <td>${item.strategies.size === 1 ? [...item.strategies][0] : "多个策略"}</td>
-        <td>${moneyRange(item.sellerPrices)}</td><td>${moneyRange(item.buyerPrices)}</td>
+        <td>${moneyRange(item.buyerPrices)}</td>
         <td>${displaySteamTime(earliestTime(item.steamListedTimes))}</td>
         <td>${earliestTime(item.nextActionTimes)
           ? displaySteamTime(earliestTime(item.nextActionTimes))
           : "未设置"}</td>
         <td class="${item.errors.size ? "error-text" : ""}">${escapeHtml([...item.errors].join("；"))}</td>
       </tr>`).join("")
-    : '<tr><td colspan="9">当前没有已同步的在售挂单</td></tr>';
+    : '<tr><td colspan="8">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }
@@ -509,7 +507,7 @@ $("#create-plans").addEventListener("click", () => busy($("#create-plans"), asyn
     strategy_profile_id: Number($("#plan-strategy").value),
     strategy: "robust_median",
     currency: $("#currency").value,
-    minimum_receive_minor: Math.round(Number($("#minimum-price").value) * 100),
+    minimum_buyer_price_minor: Math.round(Number($("#minimum-price").value) * 100),
     maximum_buyer_price_minor: Math.round(Number($("#maximum-price").value) * 100),
     maximum_items: Number($("#maximum-items").value),
   });

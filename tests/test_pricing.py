@@ -53,6 +53,22 @@ def test_wallet_minimum_fee_and_base_are_applied() -> None:
     assert seller_receive_for_buyer_pay(buyer_pays, **options) == 100
 
 
+@pytest.mark.parametrize(
+    ("minimum_total_fee", "expected"),
+    [(200, 201), (14, 15)],
+)
+def test_currency_minimum_total_fee(
+    minimum_total_fee: int, expected: int
+) -> None:
+    options = {
+        "steam_fee_minimum": minimum_total_fee - 1,
+        "publisher_fee_minimum": 1,
+        "minimum_total_fee": minimum_total_fee,
+    }
+    assert buyer_pays_for_seller_receive(1, **options) == expected
+    assert seller_receive_for_buyer_pay(expected, **options) == 1
+
+
 def test_fast_sell_uses_lower_price() -> None:
     now = datetime.now(UTC)
     points = [
