@@ -90,7 +90,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 5. 选择策略方案和最低上架价格。
 6. 点击“为选择的库存生成计划”并检查价格。
 
-Windows 下也可以直接双击 `run-with-browser.bat`，脚本会启动服务并在默认浏览器打开页面。
+Windows 下也可以直接双击 `run-with-browser.bat`，脚本会通过项目内的 Python
+启动模块启动服务并在默认浏览器打开页面。该脚本不会调用 PowerShell、隐藏进程或下载文件。
 
 ## 无网页完整运行
 

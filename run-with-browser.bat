@@ -12,8 +12,7 @@ pause
 exit /b 1
 
 :run
-start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8765'"
-"%PYTHON_EXE%" -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+"%PYTHON_EXE%" -m app.launcher
 if not errorlevel 1 exit /b 0
 
 echo.
