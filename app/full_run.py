@@ -8,7 +8,7 @@ from app.services.steam_session import steam_session_service
 
 async def run_once() -> int:
     database.initialize()
-    database.clear_runtime_cache()
+    database.clear_runtime_cache(preserve_open_listings=True)
     session = await steam_session_service.restore()
     if session.state is not SessionState.LOGGED_IN:
         print(f"[错误] Steam 登录未恢复：{session.message}")

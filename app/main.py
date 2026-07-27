@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     database.initialize()
-    database.clear_runtime_cache()
+    database.clear_runtime_cache(preserve_open_listings=True)
     session = await steam_session_service.restore()
     if session.wallet_currency:
         database.save_currency(session.wallet_currency)
@@ -38,7 +38,7 @@ async def lifespan(_app: FastAPI):
         except (OSError, PlaywrightError, RuntimeError) as exc:
             logger.warning("Steam 启动库存同步失败：%s", exc)
         try:
-            await listing_manager.refresh_current_listings()
+            await listing_manager.sync_states()
         except (OSError, PlaywrightError, RuntimeError) as exc:
             logger.warning("Steam 启动当前在售同步失败：%s", exc)
     background_scheduler.start()

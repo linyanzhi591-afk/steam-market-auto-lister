@@ -146,6 +146,40 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
     assert database.blacklist()[0]["market_hash_name"] == "Blocked"
 
 
+def test_runtime_cache_can_preserve_open_listing_request_time(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="测试",
+        market_hash_name="Test",
+        marketable=True,
+        tradable=True,
+    )
+    database.replace_inventory([asset])
+    listing_id = database.create_listing(
+        database.inventory(marketable_only=True)[0],
+        PricingStrategy.TREND,
+        1000,
+        1150,
+    )
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    database.update_listing(
+        listing_id,
+        state=ListingState.PENDING_CONFIRMATION,
+        listing_requested_at=requested_at.isoformat(),
+    )
+
+    database.clear_runtime_cache(preserve_open_listings=True)
+
+    listing = database.listing(listing_id)
+    assert listing is not None
+    assert listing.listing_requested_at == requested_at
+    assert database.inventory(marketable_only=False) == []
+
+
 def test_strategy_profiles_can_be_created_and_made_default(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     original = database.strategy_profile()

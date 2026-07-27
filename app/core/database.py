@@ -302,12 +302,20 @@ class Database:
                         (json.dumps(stages, ensure_ascii=False), row["id"]),
                     )
 
-    def clear_runtime_cache(self) -> None:
-        """清除库存、行情和全部挂单任务；黑名单与设置继续保留。"""
+    def clear_runtime_cache(self, *, preserve_open_listings: bool = False) -> None:
+        """清除库存和行情；可保留待确认、在售挂单的关联信息。"""
         with self.connect() as db:
             db.execute("DELETE FROM inventory_assets")
             db.execute("DELETE FROM price_history")
-            db.execute("DELETE FROM listings")
+            if preserve_open_listings:
+                db.execute(
+                    """
+                    DELETE FROM listings
+                    WHERE state NOT IN ('pending_confirmation', 'active')
+                    """
+                )
+            else:
+                db.execute("DELETE FROM listings")
 
     def replace_inventory(self, assets: list[InventoryAsset]) -> None:
         seen_at = utc_now()
