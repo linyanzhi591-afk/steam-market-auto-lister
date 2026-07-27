@@ -13,7 +13,11 @@ from app.core.models import (
     StrategyStage,
     SyncResult,
 )
-from app.services.listing_manager import ListingManager, _as_points
+from app.services.listing_manager import (
+    ListingManager,
+    _as_points,
+    _listing_action_reference_time,
+)
 
 
 def test_plan_explains_missing_price_history() -> None:
@@ -70,6 +74,14 @@ def test_history_keeps_buyer_facing_market_price() -> None:
         ]
     )
     assert points[0].price_minor == 1150
+
+
+def test_next_action_reference_uses_steam_listing_time() -> None:
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    reference = _listing_action_reference_time(
+        {"listed_at": "2026-07-25T04:00:00+00:00"}, None, now
+    )
+    assert reference == datetime(2026, 7, 25, 4, tzinfo=UTC)
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:

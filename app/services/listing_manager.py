@@ -45,6 +45,24 @@ def _as_points(
     ]
 
 
+def _listing_action_reference_time(
+    remote_listing: dict[str, object],
+    fallback_listed_at: str | None,
+    now: datetime,
+) -> datetime:
+    """返回 Steam 挂单的上架时间，无法取得时才回退为当前时间。"""
+    listed_at = remote_listing.get("listed_at") or fallback_listed_at
+    if not isinstance(listed_at, str) or not listed_at:
+        return now
+    try:
+        reference_time = datetime.fromisoformat(listed_at)
+    except ValueError:
+        return now
+    if reference_time.tzinfo is None:
+        reference_time = reference_time.replace(tzinfo=UTC)
+    return reference_time.astimezone(UTC)
+
+
 class ListingManager:
     def __init__(
         self,
@@ -646,12 +664,16 @@ class ListingManager:
                 )
             if match and record.state is ListingState.PENDING_CONFIRMATION:
                 stage = stages[min(record.stage, len(stages) - 1)]
-                next_action = now + timedelta(hours=stage.duration_hours)
+                listed_at = _listing_action_reference_time(
+                    match, record.steam_listed_at, now
+                )
+                next_action = listed_at + timedelta(hours=stage.duration_hours)
                 self.store.update_listing(
                     record.id,
                     state=ListingState.ACTIVE,
                     steam_listing_id=str(match["listing_id"]),
-                    active_since=now.isoformat(),
+                    steam_listed_at=str(match.get("listed_at") or "") or None,
+                    active_since=listed_at.isoformat(),
                     next_action_at=next_action.isoformat(),
                 )
                 self.store.confirm_reprice_history(
