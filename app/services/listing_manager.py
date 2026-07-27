@@ -3,7 +3,7 @@ import re
 import sqlite3
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from playwright.async_api import Error as PlaywrightError
 
@@ -46,33 +46,63 @@ def _as_points(
     ]
 
 
-def _listing_action_reference_time(
-    remote_listing: dict[str, object],
-    fallback_listed_at: str | None,
+def _parse_steam_listed_at(
+    listed_at: object,
     now: datetime,
-) -> datetime:
-    """返回 Steam 挂单的上架时间，无法取得时才回退为当前时间。"""
-    listed_at = remote_listing.get("listed_at") or fallback_listed_at
+    display_timezone: tzinfo | None = None,
+) -> datetime | None:
     if not isinstance(listed_at, str) or not listed_at:
-        return now
+        return None
     try:
         reference_time = datetime.fromisoformat(listed_at)
     except ValueError:
         chinese_date = re.fullmatch(r"\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*", listed_at)
         if not chinese_date:
-            return now
+            return None
         month, day = (int(value) for value in chinese_date.groups())
+        local_timezone = display_timezone or datetime.now().astimezone().tzinfo or UTC
+        local_now = now.astimezone(local_timezone)
         try:
-            reference_time = datetime(now.year, month, day, tzinfo=UTC)
+            reference_time = datetime(
+                local_now.year, month, day, tzinfo=local_timezone
+            )
         except ValueError:
-            return now
+            return None
         # 跨年时，Steam 页面显示的无年份日期可能属于上一年。
-        if reference_time > now:
-            reference_time = reference_time.replace(year=now.year - 1)
+        if reference_time > local_now:
+            reference_time = reference_time.replace(year=local_now.year - 1)
         return reference_time
     if reference_time.tzinfo is None:
         reference_time = reference_time.replace(tzinfo=UTC)
     return reference_time.astimezone(UTC)
+
+
+def _listing_action_reference_time(
+    remote_listing: dict[str, object],
+    fallback_listed_at: str | None,
+    now: datetime,
+    *,
+    listing_requested_at: datetime | None = None,
+    force_steam_time: bool = False,
+    display_timezone: tzinfo | None = None,
+) -> datetime:
+    """按日期比较本地请求时间与 Steam 上架日期，选择计时基准。"""
+    steam_time = _parse_steam_listed_at(
+        remote_listing.get("listed_at") or fallback_listed_at,
+        now,
+        display_timezone,
+    )
+    if force_steam_time or listing_requested_at is None:
+        return steam_time or now
+    requested_at = listing_requested_at.astimezone(UTC)
+    local_timezone = display_timezone or datetime.now().astimezone().tzinfo or UTC
+    if (
+        steam_time is not None
+        and requested_at.astimezone(local_timezone).date()
+        < steam_time.astimezone(local_timezone).date()
+    ):
+        return steam_time
+    return requested_at
 
 
 class ListingManager:
@@ -435,6 +465,11 @@ class ListingManager:
                     )
                 record = self.store.listing(record.id) or record
             try:
+                listing_requested_at = datetime.now(UTC)
+                self.store.update_listing(
+                    record.id,
+                    listing_requested_at=listing_requested_at.isoformat(),
+                )
                 payload = await self.market.create_listing(
                     record.appid,
                     record.contextid,
@@ -664,6 +699,7 @@ class ListingManager:
             _profile_id, stages = self.stages(
                 record.strategy_profile_id, record.strategy
             )
+            matched_by_name = False
             match = by_id.get(record.steam_listing_id or "")
             if match is None and record.state is ListingState.PENDING_CONFIRMATION:
                 match = next(
@@ -674,10 +710,22 @@ class ListingManager:
                     ),
                     None,
                 )
+                matched_by_name = match is not None
+            time_warning = None
+            if matched_by_name:
+                time_warning = (
+                    "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间"
+                )
+            elif match and record.listing_requested_at is None:
+                time_warning = "缺少本地上架请求时间，已使用 Steam 上架时间"
             if match and record.state is ListingState.PENDING_CONFIRMATION:
                 stage = stages[min(record.stage, len(stages) - 1)]
                 listed_at = _listing_action_reference_time(
-                    match, record.steam_listed_at, now
+                    match,
+                    record.steam_listed_at,
+                    now,
+                    listing_requested_at=record.listing_requested_at,
+                    force_steam_time=matched_by_name,
                 )
                 next_action = listed_at + timedelta(hours=stage.duration_hours)
                 self.store.update_listing(
@@ -687,7 +735,24 @@ class ListingManager:
                     steam_listed_at=str(match.get("listed_at") or "") or None,
                     active_since=listed_at.isoformat(),
                     next_action_at=next_action.isoformat(),
+                    error_message=time_warning,
                 )
+                if time_warning:
+                    self.store.audit(
+                        "listing.time_reference_anomaly",
+                        record.assetid,
+                        {
+                            "listing_record_id": record.id,
+                            "steam_listing_id": str(match["listing_id"]),
+                            "warning": time_warning,
+                            "steam_listed_at": match.get("listed_at"),
+                            "listing_requested_at": (
+                                record.listing_requested_at.isoformat()
+                                if record.listing_requested_at
+                                else None
+                            ),
+                        },
+                    )
                 self.store.confirm_reprice_history(
                     record.id, str(match["listing_id"])
                 )
@@ -699,18 +764,34 @@ class ListingManager:
                 # 每次同步都用 Steam 上架日期校正一次。
                 stage = stages[min(record.stage, len(stages) - 1)]
                 listed_at = _listing_action_reference_time(
-                    match, record.steam_listed_at, now
+                    match,
+                    record.steam_listed_at,
+                    now,
+                    listing_requested_at=record.listing_requested_at,
                 )
                 next_action = listed_at + timedelta(hours=stage.duration_hours)
                 expected_next_action = next_action.isoformat()
-                if record.next_action_at != next_action:
+                if record.next_action_at != next_action or time_warning:
                     self.store.update_listing(
                         record.id,
                         steam_listed_at=str(match.get("listed_at") or "") or None,
                         active_since=listed_at.isoformat(),
                         next_action_at=expected_next_action,
+                        error_message=time_warning,
                     )
                     updated += 1
+                if time_warning:
+                    self.store.audit(
+                        "listing.time_reference_anomaly",
+                        record.assetid,
+                        {
+                            "listing_record_id": record.id,
+                            "steam_listing_id": str(match["listing_id"]),
+                            "warning": time_warning,
+                            "steam_listed_at": match.get("listed_at"),
+                            "listing_requested_at": None,
+                        },
+                    )
                 if match in unmatched:
                     unmatched.remove(match)
             elif not match and record.state is ListingState.ACTIVE:

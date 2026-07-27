@@ -89,6 +89,7 @@ class Database:
                     minimum_buyer_price_minor INTEGER NOT NULL DEFAULT 1,
                     steam_listing_id TEXT,
                     steam_listed_at TEXT,
+                    listing_requested_at TEXT,
                     error_message TEXT,
                     price_source TEXT NOT NULL DEFAULT 'strategy',
                     strategy_seller_price_minor INTEGER,
@@ -195,6 +196,7 @@ class Database:
                 "strategy_buyer_price_minor": "INTEGER",
                 "reference_reprice_id": "INTEGER",
                 "price_difference_percent": "REAL",
+                "listing_requested_at": "TEXT",
             }
             for name, definition in listing_migrations.items():
                 if name not in columns:
@@ -813,6 +815,7 @@ class Database:
             "minimum_buyer_price_minor",
             "steam_listing_id",
             "steam_listed_at",
+            "listing_requested_at",
             "error_message",
             "price_source",
             "strategy_seller_price_minor",

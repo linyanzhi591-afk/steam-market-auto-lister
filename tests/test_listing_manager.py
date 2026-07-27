@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -79,14 +79,73 @@ def test_history_keeps_buyer_facing_market_price() -> None:
 def test_next_action_reference_uses_steam_listing_time() -> None:
     now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
     reference = _listing_action_reference_time(
-        {"listed_at": "2026-07-25T04:00:00+00:00"}, None, now
+        {"listed_at": "2026-07-25T04:00:00+00:00"},
+        None,
+        now,
+        display_timezone=UTC,
     )
     assert reference == datetime(2026, 7, 25, 4, tzinfo=UTC)
 
 
 def test_next_action_reference_parses_steam_chinese_date() -> None:
     now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    reference = _listing_action_reference_time({"listed_at": "7 月 25 日"}, None, now)
+    reference = _listing_action_reference_time(
+        {"listed_at": "7 月 25 日"}, None, now, display_timezone=UTC
+    )
+    assert reference == datetime(2026, 7, 25, tzinfo=UTC)
+
+
+def test_same_steam_date_prefers_precise_request_time() -> None:
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    reference = _listing_action_reference_time(
+        {"listed_at": "7 月 25 日"},
+        None,
+        now,
+        listing_requested_at=requested_at,
+        display_timezone=UTC,
+    )
+    assert reference == requested_at
+
+
+def test_later_steam_date_replaces_request_time_with_midnight() -> None:
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    reference = _listing_action_reference_time(
+        {"listed_at": "7 月 26 日"},
+        None,
+        now,
+        listing_requested_at=requested_at,
+        display_timezone=UTC,
+    )
+    assert reference == datetime(2026, 7, 26, tzinfo=UTC)
+
+
+def test_steam_date_midnight_uses_display_timezone() -> None:
+    display_timezone = timezone(timedelta(hours=8))
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    requested_at = datetime(2026, 7, 25, 6, 25, 26, tzinfo=UTC)
+    reference = _listing_action_reference_time(
+        {"listed_at": "7 月 26 日"},
+        None,
+        now,
+        listing_requested_at=requested_at,
+        display_timezone=display_timezone,
+    )
+    assert reference == datetime(2026, 7, 26, tzinfo=display_timezone)
+
+
+def test_name_only_match_forces_steam_time() -> None:
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    reference = _listing_action_reference_time(
+        {"listed_at": "7 月 25 日"},
+        None,
+        now,
+        listing_requested_at=requested_at,
+        force_steam_time=True,
+        display_timezone=UTC,
+    )
     assert reference == datetime(2026, 7, 25, tzinfo=UTC)
 
 

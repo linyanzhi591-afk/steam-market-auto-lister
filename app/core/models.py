@@ -85,6 +85,7 @@ class ListingRecord(BaseModel):
     minimum_buyer_price_minor: int = 1
     steam_listing_id: str | None = None
     steam_listed_at: str | None = None
+    listing_requested_at: datetime | None = None
     error_message: str | None = None
     price_source: str = "strategy"
     strategy_seller_price_minor: int | None = None

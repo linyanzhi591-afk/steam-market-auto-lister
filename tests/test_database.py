@@ -43,6 +43,11 @@ def test_inventory_upsert_and_listing_plan(tmp_path: Path) -> None:
     assert listing is not None
     assert listing.assetid == "100"
     assert listing.seller_price_minor == 1000
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    database.update_listing(
+        listing_id, listing_requested_at=requested_at.isoformat()
+    )
+    assert database.listing(listing_id).listing_requested_at == requested_at
 
 
 def test_inventory_missing_from_next_sync_is_not_marketable(tmp_path: Path) -> None:
