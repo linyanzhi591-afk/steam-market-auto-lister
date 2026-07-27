@@ -29,6 +29,12 @@ from app.services.pricing import (
 from app.services.steam_market import SteamMarketService, steam_market_service
 
 EXECUTE_CONFIRMATION = "我确认执行真实市场操作"
+NAME_MATCH_TIME_WARNING = "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间"
+MISSING_REQUEST_TIME_WARNING = "缺少本地上架请求时间，已使用 Steam 上架时间"
+TIME_REFERENCE_WARNINGS = {
+    NAME_MATCH_TIME_WARNING,
+    MISSING_REQUEST_TIME_WARNING,
+}
 
 
 def _as_points(
@@ -713,11 +719,9 @@ class ListingManager:
                 matched_by_name = match is not None
             time_warning = None
             if matched_by_name:
-                time_warning = (
-                    "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间"
-                )
+                time_warning = NAME_MATCH_TIME_WARNING
             elif match and record.listing_requested_at is None:
-                time_warning = "缺少本地上架请求时间，已使用 Steam 上架时间"
+                time_warning = MISSING_REQUEST_TIME_WARNING
             if match and record.state is ListingState.PENDING_CONFIRMATION:
                 stage = stages[min(record.stage, len(stages) - 1)]
                 listed_at = _listing_action_reference_time(
@@ -967,10 +971,12 @@ class ListingManager:
             )
             for record in self.store.listings([ListingState.ACTIVE]):
                 if record.error_message:
-                    result.errors.append(
-                        f"超时挂单处理失败：{record.market_hash_name}："
-                        f"{record.error_message}"
-                    )
+                    message = f"{record.market_hash_name}：{record.error_message}"
+                    if record.error_message in TIME_REFERENCE_WARNINGS:
+                        result.warnings.append(message)
+                        report(f"[2/4] 时间基准警告：{message}")
+                    else:
+                        result.errors.append(f"超时挂单处理失败：{message}")
         except (OSError, PlaywrightError, PermissionError, RuntimeError) as exc:
             result.errors.append(f"超时处理失败：{exc}")
             report(f"[2/4] 超时处理失败：{exc}")

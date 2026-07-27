@@ -169,6 +169,7 @@ class FullRunResult(BaseModel):
     plans_created: int = 0
     price_reviews: int = 0
     listings_submitted: int = 0
+    warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
