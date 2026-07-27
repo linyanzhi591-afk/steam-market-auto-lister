@@ -84,6 +84,12 @@ def test_next_action_reference_uses_steam_listing_time() -> None:
     assert reference == datetime(2026, 7, 25, 4, tzinfo=UTC)
 
 
+def test_next_action_reference_parses_steam_chinese_date() -> None:
+    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
+    reference = _listing_action_reference_time({"listed_at": "7 月 25 日"}, None, now)
+    assert reference == datetime(2026, 7, 25, tzinfo=UTC)
+
+
 def test_fast_sell_uses_current_lowest_market_price() -> None:
     manager = ListingManager(store=object(), market=object())
     now = datetime.now(UTC)

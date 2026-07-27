@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -57,7 +58,18 @@ def _listing_action_reference_time(
     try:
         reference_time = datetime.fromisoformat(listed_at)
     except ValueError:
-        return now
+        chinese_date = re.fullmatch(r"\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*", listed_at)
+        if not chinese_date:
+            return now
+        month, day = (int(value) for value in chinese_date.groups())
+        try:
+            reference_time = datetime(now.year, month, day, tzinfo=UTC)
+        except ValueError:
+            return now
+        # 跨年时，Steam 页面显示的无年份日期可能属于上一年。
+        if reference_time > now:
+            reference_time = reference_time.replace(year=now.year - 1)
+        return reference_time
     if reference_time.tzinfo is None:
         reference_time = reference_time.replace(tzinfo=UTC)
     return reference_time.astimezone(UTC)
