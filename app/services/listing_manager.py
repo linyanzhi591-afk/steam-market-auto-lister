@@ -694,6 +694,25 @@ class ListingManager:
                 if match in unmatched:
                     unmatched.remove(match)
                 updated += 1
+            elif match and record.state is ListingState.ACTIVE:
+                # 兼容旧数据：此前可能以同步时间写入了 next_action_at，
+                # 每次同步都用 Steam 上架日期校正一次。
+                stage = stages[min(record.stage, len(stages) - 1)]
+                listed_at = _listing_action_reference_time(
+                    match, record.steam_listed_at, now
+                )
+                next_action = listed_at + timedelta(hours=stage.duration_hours)
+                expected_next_action = next_action.isoformat()
+                if record.next_action_at != next_action:
+                    self.store.update_listing(
+                        record.id,
+                        steam_listed_at=str(match.get("listed_at") or "") or None,
+                        active_since=listed_at.isoformat(),
+                        next_action_at=expected_next_action,
+                    )
+                    updated += 1
+                if match in unmatched:
+                    unmatched.remove(match)
             elif not match and record.state is ListingState.ACTIVE:
                 state = (
                     ListingState.SOLD
