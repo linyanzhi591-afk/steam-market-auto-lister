@@ -248,9 +248,9 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
     assert database.blacklist()[0]["market_hash_name"] == "Blocked"
 
 
-def test_runtime_cache_can_preserve_open_listing_request_time(tmp_path: Path) -> None:
+def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
-    asset = InventoryAsset(
+    pending_asset = InventoryAsset(
         appid=730,
         contextid="2",
         assetid="100",
@@ -260,25 +260,48 @@ def test_runtime_cache_can_preserve_open_listing_request_time(tmp_path: Path) ->
         marketable=True,
         tradable=True,
     )
-    database.replace_inventory([asset])
-    listing_id = database.create_listing(
-        database.inventory(marketable_only=True)[0],
+    active_asset = pending_asset.model_copy(
+        update={"assetid": "101", "market_hash_name": "Active Test"}
+    )
+    database.replace_inventory([pending_asset, active_asset])
+    pending_id = database.create_listing(
+        next(
+            item
+            for item in database.inventory(marketable_only=True)
+            if item["assetid"] == "100"
+        ),
+        PricingStrategy.TREND,
+        1000,
+        1150,
+    )
+    active_id = database.create_listing(
+        next(
+            item
+            for item in database.inventory(marketable_only=True)
+            if item["assetid"] == "101"
+        ),
         PricingStrategy.TREND,
         1000,
         1150,
     )
     requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
     database.update_listing(
-        listing_id,
+        pending_id,
         state=ListingState.PENDING_CONFIRMATION,
         listing_requested_at=requested_at.isoformat(),
     )
+    database.update_listing(
+        active_id,
+        state=ListingState.ACTIVE,
+        steam_listing_id="listing-101",
+    )
 
-    database.clear_runtime_cache(preserve_open_listings=True)
+    database.clear_runtime_cache(preserve_active_listings=True)
 
-    listing = database.listing(listing_id)
-    assert listing is not None
-    assert listing.listing_requested_at == requested_at
+    assert database.listing(pending_id) is None
+    active = database.listing(active_id)
+    assert active is not None
+    assert active.steam_listing_id == "listing-101"
     assert database.inventory(marketable_only=False) == []
 
 

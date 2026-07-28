@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     database.initialize()
-    database.clear_runtime_cache(preserve_open_listings=True)
+    database.clear_runtime_cache(preserve_active_listings=True)
     session = await steam_session_service.restore()
     if session.wallet_currency:
         database.save_currency(session.wallet_currency)
