@@ -60,6 +60,16 @@ def parse_inventory_payload(
     return result
 
 
+def deduplicate_inventory_assets(
+    assets: list[InventoryAsset],
+) -> list[InventoryAsset]:
+    """按 Steam 实体资产 ID 去重，避免重复上下文或分页结果重复计数。"""
+    unique: dict[str, InventoryAsset] = {}
+    for asset in assets:
+        unique[asset.assetid] = asset
+    return list(unique.values())
+
+
 def parse_price_history(payload: dict[str, Any]) -> list[tuple[str, int, int]]:
     cutoff = datetime.now(UTC) - timedelta(days=30)
     rows: list[tuple[str, int, int]] = []
@@ -524,13 +534,23 @@ class SteamMarketService:
                         break
                     await asyncio.sleep(settings.request_delay_seconds)
                 await asyncio.sleep(settings.request_delay_seconds)
+        unique_assets = deduplicate_inventory_assets(assets)
+        duplicate_count = len(assets) - len(unique_assets)
         # 任一上下文失败时不覆盖旧库存，避免把暂时无法访问的资产误标为不可出售。
         if not errors:
-            self.store.replace_inventory(assets)
-        self.store.audit("inventory.sync", status.steam_id, {"count": len(assets), "errors": errors})
+            self.store.replace_inventory(unique_assets)
+        self.store.audit(
+            "inventory.sync",
+            status.steam_id,
+            {
+                "count": len(unique_assets),
+                "duplicate_count": duplicate_count,
+                "errors": errors,
+            },
+        )
         return SyncResult(
-            inventory_count=len(assets),
-            marketable_count=sum(item.marketable for item in assets),
+            inventory_count=len(unique_assets),
+            marketable_count=sum(item.marketable for item in unique_assets),
             errors=errors,
         )
 
