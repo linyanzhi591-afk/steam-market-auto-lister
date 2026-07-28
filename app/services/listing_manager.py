@@ -111,6 +111,17 @@ def _listing_action_reference_time(
     return requested_at
 
 
+def _is_same_listing_asset(
+    remote_listing: dict[str, object], assetid: str, appid: int
+) -> bool:
+    """判断 Steam 挂单是否对应同一个实体饰品。"""
+    return (
+        bool(assetid)
+        and str(remote_listing.get("assetid") or "") == assetid
+        and int(remote_listing.get("appid") or 0) == appid
+    )
+
+
 class ListingManager:
     def __init__(
         self,
@@ -707,6 +718,17 @@ class ListingManager:
             )
             matched_by_name = False
             match = by_id.get(record.steam_listing_id or "")
+            if match is None and record.state is ListingState.PENDING_CONFIRMATION:
+                match = next(
+                    (
+                        item
+                        for item in unmatched
+                        if _is_same_listing_asset(
+                            item, record.assetid, record.appid
+                        )
+                    ),
+                    None,
+                )
             if match is None and record.state is ListingState.PENDING_CONFIRMATION:
                 match = next(
                     (

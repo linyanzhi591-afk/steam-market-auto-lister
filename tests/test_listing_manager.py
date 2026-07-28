@@ -16,6 +16,7 @@ from app.core.models import (
 from app.services.listing_manager import (
     ListingManager,
     _as_points,
+    _is_same_listing_asset,
     _listing_action_reference_time,
 )
 
@@ -147,6 +148,17 @@ def test_name_only_match_forces_steam_time() -> None:
         display_timezone=UTC,
     )
     assert reference == datetime(2026, 7, 25, tzinfo=UTC)
+
+
+def test_pending_listing_can_match_exact_asset_without_listing_id() -> None:
+    remote = {
+        "listing_id": "9001",
+        "assetid": "52940911278",
+        "appid": 730,
+        "market_hash_name": "Same Name",
+    }
+    assert _is_same_listing_asset(remote, "52940911278", 730) is True
+    assert _is_same_listing_asset(remote, "different-asset", 730) is False
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:
