@@ -353,6 +353,59 @@ def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     assert listing.strategy_profile_id == database.strategy_profile().id
 
 
+def test_active_import_reconciles_listing_id_asset_conflict(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    first = {
+        "assetid": "100",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "First Item",
+    }
+    second = {
+        "assetid": "101",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "Second Item",
+    }
+    first_id = database.create_listing(
+        first, PricingStrategy.TREND, 100, 115
+    )
+    second_id = database.create_listing(
+        second, PricingStrategy.TREND, 100, 115
+    )
+    database.update_listing(
+        first_id,
+        state=ListingState.ACTIVE,
+        steam_listing_id="listing-9001",
+    )
+    database.update_listing(
+        second_id,
+        state=ListingState.ACTIVE,
+        steam_listing_id="listing-9002",
+    )
+
+    imported = database.import_active_listings(
+        [
+            {
+                **second,
+                "listing_id": "listing-9001",
+                "buyer_price_minor": 115,
+                "listed_at": "2026-07-28T00:00:00+00:00",
+            }
+        ]
+    )
+
+    assert imported == 0
+    stale = database.listing(first_id)
+    current = database.listing(second_id)
+    assert stale is not None
+    assert stale.state is ListingState.CANCELLED
+    assert stale.steam_listing_id is None
+    assert current is not None
+    assert current.state is ListingState.ACTIVE
+    assert current.steam_listing_id == "listing-9001"
+
+
 def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     asset = InventoryAsset(

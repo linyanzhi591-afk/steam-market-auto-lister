@@ -699,10 +699,6 @@ class Database:
                 steam_listing_id = str(item.get("listing_id", ""))
                 if not steam_listing_id:
                     continue
-                existing = db.execute(
-                    "SELECT id FROM listings WHERE steam_listing_id = ?",
-                    (steam_listing_id,),
-                ).fetchone()
                 remote_assetid = str(item.get("assetid") or "")
                 assetid = remote_assetid or f"external:{steam_listing_id}"
                 appid = int(item.get("appid") or 0)
@@ -710,6 +706,35 @@ class Database:
                 contextid = remote_contextid or "0"
                 remote_name = str(item.get("market_hash_name") or "")
                 market_hash_name = remote_name or "未知在售物品"
+                existing_by_listing = db.execute(
+                    """
+                    SELECT id FROM listings
+                    WHERE steam_listing_id = ?
+                      AND state IN (
+                          'planned', 'price_review',
+                          'pending_confirmation', 'active'
+                      )
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (steam_listing_id,),
+                ).fetchone()
+                existing_by_asset = None
+                if remote_assetid and appid and remote_contextid:
+                    existing_by_asset = db.execute(
+                        """
+                        SELECT id FROM listings
+                        WHERE appid = ? AND contextid = ? AND assetid = ?
+                          AND state IN (
+                              'planned', 'price_review',
+                              'pending_confirmation', 'active'
+                          )
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (appid, remote_contextid, remote_assetid),
+                    ).fetchone()
+                existing = existing_by_asset or existing_by_listing
                 buyer_price = int(item.get("buyer_price_minor") or 0)
                 if buyer_price <= 0:
                     number_match = re.search(
@@ -775,12 +800,34 @@ class Database:
                         """
                         UPDATE listings SET
                             state = ?,
+                            steam_listing_id = NULL,
+                            error_message = ?,
+                            updated_at = ?
+                        WHERE steam_listing_id = ? AND id != ?
+                          AND state IN (
+                              'planned', 'price_review',
+                              'pending_confirmation', 'active'
+                          )
+                        """,
+                        (
+                            ListingState.CANCELLED.value,
+                            "Steam Listing ID 已关联到另一资产，启动同步时解除旧关联",
+                            utc_now(),
+                            steam_listing_id,
+                            existing["id"],
+                        ),
+                    )
+                    db.execute(
+                        """
+                        UPDATE listings SET
+                            state = ?,
                             assetid = CASE WHEN ? != '' THEN ? ELSE assetid END,
                             appid = CASE WHEN ? != 0 THEN ? ELSE appid END,
                             contextid = CASE WHEN ? != '' THEN ? ELSE contextid END,
                             market_hash_name = CASE WHEN ? != '' THEN ? ELSE market_hash_name END,
                             seller_price_minor = ?,
                             buyer_price_minor = ?,
+                            steam_listing_id = ?,
                             steam_listed_at = CASE WHEN ? != '' THEN ? ELSE steam_listed_at END,
                             error_message = NULL,
                             updated_at = ?
@@ -798,6 +845,7 @@ class Database:
                             remote_name,
                             seller_price,
                             max(buyer_price, seller_price),
+                            steam_listing_id,
                             str(item.get("listed_at") or ""),
                             str(item.get("listed_at") or ""),
                             utc_now(),
