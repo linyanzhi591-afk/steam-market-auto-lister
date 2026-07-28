@@ -122,6 +122,30 @@ def _is_same_listing_asset(
     )
 
 
+def _consume_recent_sale(
+    recent_sales: list[tuple[str, datetime | None]],
+    market_hash_name: str,
+    *,
+    requested_at: datetime | None = None,
+) -> bool:
+    """消费一条匹配的售出记录；pending 还要求售出日期不早于请求日期。"""
+    local_timezone = datetime.now().astimezone().tzinfo or UTC
+    for index, (sale_name, sold_at) in enumerate(recent_sales):
+        if sale_name != market_hash_name:
+            continue
+        if requested_at is not None:
+            if sold_at is None:
+                continue
+            if (
+                sold_at.astimezone(local_timezone).date()
+                < requested_at.astimezone(local_timezone).date()
+            ):
+                continue
+        recent_sales.pop(index)
+        return True
+    return False
+
+
 class ListingManager:
     def __init__(
         self,
@@ -702,7 +726,16 @@ class ListingManager:
 
     async def sync_states(self) -> SyncResult:
         remote = await self.market.active_listings()
-        recent_sales = await self.market.recent_sales()
+        now = datetime.now(UTC)
+        recent_sales: list[tuple[str, datetime | None]] = []
+        for sale in await self.market.recent_sales():
+            if isinstance(sale, str):
+                recent_sales.append((sale, None))
+                continue
+            name = str(sale.get("market_hash_name") or "")
+            sold_at = _parse_steam_listed_at(sale.get("sold_at"), now)
+            if name:
+                recent_sales.append((name, sold_at))
         imported = self.store.import_active_listings(remote, self.fee_options())
         reconciled = self.store.reconcile_pending_reprices()
         by_id = {str(item["listing_id"]): item for item in remote}
@@ -711,7 +744,8 @@ class ListingManager:
         open_records = self.store.listings(
             [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
         )
-        now = datetime.now(UTC)
+        missing_active: list[ListingRecord] = []
+        missing_pending: list[ListingRecord] = []
         for record in open_records:
             _profile_id, stages = self.stages(
                 record.strategy_profile_id, record.strategy
@@ -821,13 +855,47 @@ class ListingManager:
                 if match in unmatched:
                     unmatched.remove(match)
             elif not match and record.state is ListingState.ACTIVE:
-                state = (
-                    ListingState.SOLD
-                    if record.market_hash_name in recent_sales
-                    else ListingState.PAUSED
-                )
-                self.store.update_listing(record.id, state=state)
-                updated += 1
+                missing_active.append(record)
+            elif not match and record.state is ListingState.PENDING_CONFIRMATION:
+                missing_pending.append(record)
+
+        # 已同步为 active 的挂单证据更强，优先消耗同名售出记录。
+        for record in missing_active:
+            if _consume_recent_sale(recent_sales, record.market_hash_name):
+                state = ListingState.SOLD
+            else:
+                state = ListingState.PAUSED
+            self.store.update_listing(record.id, state=state)
+            updated += 1
+
+        # 挂单可能在两次同步之间完成确认并立即售出，因而从未进入本地 active。
+        for record in missing_pending:
+            if not _consume_recent_sale(
+                recent_sales,
+                record.market_hash_name,
+                requested_at=record.listing_requested_at,
+            ):
+                continue
+            self.store.update_listing(
+                record.id,
+                state=ListingState.SOLD,
+                error_message=None,
+            )
+            self.store.mark_reprice_history_sold(record.id)
+            self.store.audit(
+                "listing.sold_before_activation",
+                record.assetid,
+                {
+                    "listing_record_id": record.id,
+                    "market_hash_name": record.market_hash_name,
+                    "listing_requested_at": (
+                        record.listing_requested_at.isoformat()
+                        if record.listing_requested_at
+                        else None
+                    ),
+                },
+            )
+            updated += 1
         return SyncResult(listings_updated=updated)
 
     async def refresh_current_listings(self) -> SyncResult:

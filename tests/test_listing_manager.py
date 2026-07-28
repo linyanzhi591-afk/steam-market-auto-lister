@@ -6,6 +6,8 @@ import pytest
 from app.core.models import (
     AppSettings,
     Currency,
+    ListingRecord,
+    ListingState,
     PricePoint,
     PricingStrategy,
     SessionState,
@@ -16,6 +18,7 @@ from app.core.models import (
 from app.services.listing_manager import (
     ListingManager,
     _as_points,
+    _consume_recent_sale,
     _is_same_listing_asset,
     _listing_action_reference_time,
 )
@@ -159,6 +162,89 @@ def test_pending_listing_can_match_exact_asset_without_listing_id() -> None:
     }
     assert _is_same_listing_asset(remote, "52940911278", 730) is True
     assert _is_same_listing_asset(remote, "different-asset", 730) is False
+
+
+def test_one_recent_sale_resolves_only_one_unmatched_pending_listing() -> None:
+    now = datetime(2026, 7, 28, 2, 2, tzinfo=UTC)
+    records = [
+        ListingRecord(
+            id=listing_id,
+            assetid=f"asset-{listing_id}",
+            appid=730,
+            contextid="2",
+            market_hash_name="Tec-9 | Rebel (Well-Worn)",
+            state=ListingState.PENDING_CONFIRMATION,
+            strategy=PricingStrategy.TREND,
+            stage=0,
+            seller_price_minor=676,
+            buyer_price_minor=876,
+            listing_requested_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        for listing_id in (1, 2)
+    ]
+
+    class Store:
+        def __init__(self):
+            self.updates = []
+            self.sold_histories = []
+            self.audits = []
+
+        def import_active_listings(self, *_args):
+            return 0
+
+        def reconcile_pending_reprices(self):
+            return 0
+
+        def listings(self, _states):
+            return records
+
+        def update_listing(self, listing_id, **fields):
+            self.updates.append((listing_id, fields))
+
+        def mark_reprice_history_sold(self, listing_id):
+            self.sold_histories.append(listing_id)
+
+        def audit(self, *args):
+            self.audits.append(args)
+
+    class Market:
+        async def active_listings(self):
+            return []
+
+        async def recent_sales(self):
+            return [
+                {
+                    "market_hash_name": "Tec-9 | Rebel (Well-Worn)",
+                    "sold_at": "7 月 28 日",
+                }
+            ]
+
+    store = Store()
+    manager = ListingManager(store=store, market=Market())
+    result = asyncio.run(manager.sync_states())
+
+    assert result.listings_updated == 1
+    assert store.updates == [(1, {"state": ListingState.SOLD, "error_message": None})]
+    assert store.sold_histories == [1]
+    assert len(store.audits) == 1
+
+
+def test_pending_listing_does_not_consume_sale_from_earlier_date() -> None:
+    sales = [
+        (
+            "Tec-9 | Rebel (Well-Worn)",
+            datetime(2026, 7, 27, tzinfo=UTC),
+        )
+    ]
+    consumed = _consume_recent_sale(
+        sales,
+        "Tec-9 | Rebel (Well-Worn)",
+        requested_at=datetime(2026, 7, 28, 2, 2, tzinfo=UTC),
+    )
+    assert consumed is False
+    assert len(sales) == 1
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:

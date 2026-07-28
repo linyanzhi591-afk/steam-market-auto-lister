@@ -779,7 +779,7 @@ class SteamMarketService:
                 await api_page.close()
         return listings
 
-    async def recent_sales(self) -> set[str]:
+    async def recent_sales(self) -> list[dict[str, str]]:
         """读取最近市场历史，用于区分售出与手动撤单。"""
         async with self.session.browser_context() as context:
             page = context.pages[0] if context.pages else await context.new_page()
@@ -791,19 +791,31 @@ class SteamMarketService:
             html = str(payload.get("results_html", ""))
             parser_page = await context.new_page()
             await parser_page.set_content(f"<main>{html}</main>")
-            names = await parser_page.evaluate(
+            sales = await parser_page.evaluate(
                 """
                 () => Array.from(document.querySelectorAll('.market_listing_row'))
                   .filter(row => {
                     const marker = row.querySelector('.market_listing_gainorloss');
                     return marker && marker.textContent.includes('+');
                   })
-                  .map(row => row.querySelector('.market_listing_item_name')?.textContent?.trim())
-                  .filter(Boolean)
+                  .map(row => ({
+                    market_hash_name:
+                      row.querySelector('.market_listing_item_name')?.textContent?.trim() || '',
+                    sold_at:
+                      row.querySelector('.market_listing_listed_date')?.textContent?.trim() || ''
+                  }))
+                  .filter(item => item.market_hash_name)
                 """
             )
             await parser_page.close()
-            return set(names)
+            # 保留重复记录；每一条市场历史记录只能匹配一个本地挂单。
+            return [
+                {
+                    "market_hash_name": str(item.get("market_hash_name") or ""),
+                    "sold_at": str(item.get("sold_at") or ""),
+                }
+                for item in sales
+            ]
 
 
 steam_market_service = SteamMarketService()

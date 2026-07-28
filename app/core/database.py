@@ -926,6 +926,19 @@ class Database:
                 (new_steam_listing_id, utc_now(), listing_record_id),
             )
 
+    def mark_reprice_history_sold(self, listing_record_id: int) -> None:
+        """挂单在首次 active 同步前售出时，结束等待确认的调价历史。"""
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE reprice_history
+                SET status = 'sold', confirmed_at = ?,
+                    error_message = NULL
+                WHERE listing_record_id = ? AND status = 'waiting_confirmation'
+                """,
+                (utc_now(), listing_record_id),
+            )
+
     def reconcile_pending_reprices(self) -> int:
         """在重启后用当前 active 挂单确认尚未完成的调价历史。"""
         confirmed = 0
