@@ -1,5 +1,8 @@
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from app.core.database import Database
 from app.core.models import (
@@ -65,6 +68,105 @@ def test_inventory_missing_from_next_sync_is_not_marketable(tmp_path: Path) -> N
     database.replace_inventory([asset])
     database.replace_inventory([])
     assert database.inventory(marketable_only=True) == []
+
+
+def test_inventory_identity_includes_app_and_context(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    base = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="可出售",
+        market_hash_name="Marketable Test",
+        marketable=True,
+        tradable=True,
+    )
+    other_context = base.model_copy(
+        update={
+            "contextid": "16",
+            "name": "不可出售",
+            "market_hash_name": "Unmarketable Test",
+            "marketable": False,
+        }
+    )
+
+    database.replace_inventory([base, other_context])
+
+    inventory = database.inventory(exclude_blacklisted=False)
+    assert len(inventory) == 2
+    assert {(item["contextid"], item["marketable"]) for item in inventory} == {
+        ("2", 1),
+        ("16", 0),
+    }
+    assert len(database.inventory(marketable_only=True)) == 1
+
+    first_id = database.create_listing(
+        next(item for item in inventory if item["contextid"] == "2"),
+        PricingStrategy.ROBUST_MEDIAN,
+        100,
+        115,
+    )
+    second_id = database.create_listing(
+        next(item for item in inventory if item["contextid"] == "16"),
+        PricingStrategy.ROBUST_MEDIAN,
+        100,
+        115,
+    )
+    assert first_id != second_id
+    with pytest.raises(sqlite3.IntegrityError):
+        database.create_listing(
+            next(item for item in inventory if item["contextid"] == "2"),
+            PricingStrategy.ROBUST_MEDIAN,
+            100,
+            115,
+        )
+
+
+def test_legacy_inventory_primary_key_is_migrated(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE inventory_assets (
+                assetid TEXT PRIMARY KEY,
+                appid INTEGER NOT NULL,
+                contextid TEXT NOT NULL,
+                classid TEXT NOT NULL,
+                instanceid TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                market_hash_name TEXT NOT NULL,
+                marketable INTEGER NOT NULL,
+                tradable INTEGER NOT NULL,
+                commodity INTEGER NOT NULL,
+                icon_url TEXT,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO inventory_assets VALUES (
+                '100', 730, '2', '200', '0', 1, '测试', 'Test',
+                1, 1, 0, NULL, '2026-07-28T00:00:00+00:00'
+            )
+            """
+        )
+
+    database = make_database(path)
+
+    with database.connect() as connection:
+        columns = connection.execute(
+            "PRAGMA table_info(inventory_assets)"
+        ).fetchall()
+    primary_key = [
+        row["name"]
+        for row in sorted(columns, key=lambda row: row["pk"])
+        if row["pk"]
+    ]
+    assert primary_key == ["appid", "contextid", "assetid"]
+    assert len(database.inventory(marketable_only=True)) == 1
 
 
 def test_blacklist_hides_inventory_and_pauses_plan(tmp_path: Path) -> None:

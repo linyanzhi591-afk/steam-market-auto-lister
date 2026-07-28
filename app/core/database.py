@@ -47,7 +47,7 @@ class Database:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS inventory_assets (
-                    assetid TEXT PRIMARY KEY,
+                    assetid TEXT NOT NULL,
                     appid INTEGER NOT NULL,
                     contextid TEXT NOT NULL,
                     classid TEXT NOT NULL,
@@ -59,7 +59,8 @@ class Database:
                     tradable INTEGER NOT NULL,
                     commodity INTEGER NOT NULL,
                     icon_url TEXT,
-                    last_seen_at TEXT NOT NULL
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (appid, contextid, assetid)
                 );
                 CREATE INDEX IF NOT EXISTS idx_inventory_market_name
                     ON inventory_assets(appid, market_hash_name);
@@ -102,7 +103,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_listing_per_asset
-                    ON listings(assetid)
+                    ON listings(appid, contextid, assetid)
                     WHERE state IN ('planned', 'pending_confirmation', 'active');
 
                 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -159,6 +160,52 @@ class Database:
                     ON reprice_history(appid, market_hash_name, status, confirmed_at);
                 """
             )
+            inventory_columns = db.execute(
+                "PRAGMA table_info(inventory_assets)"
+            ).fetchall()
+            inventory_primary_key = [
+                row["name"]
+                for row in sorted(inventory_columns, key=lambda row: row["pk"])
+                if row["pk"]
+            ]
+            if inventory_primary_key != ["appid", "contextid", "assetid"]:
+                db.execute("DROP INDEX IF EXISTS idx_inventory_market_name")
+                db.execute(
+                    "ALTER TABLE inventory_assets RENAME TO inventory_assets_legacy"
+                )
+                db.executescript(
+                    """
+                    CREATE TABLE inventory_assets (
+                        assetid TEXT NOT NULL,
+                        appid INTEGER NOT NULL,
+                        contextid TEXT NOT NULL,
+                        classid TEXT NOT NULL,
+                        instanceid TEXT NOT NULL,
+                        amount INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        market_hash_name TEXT NOT NULL,
+                        marketable INTEGER NOT NULL,
+                        tradable INTEGER NOT NULL,
+                        commodity INTEGER NOT NULL,
+                        icon_url TEXT,
+                        last_seen_at TEXT NOT NULL,
+                        PRIMARY KEY (appid, contextid, assetid)
+                    );
+                    INSERT OR REPLACE INTO inventory_assets (
+                        assetid, appid, contextid, classid, instanceid, amount,
+                        name, market_hash_name, marketable, tradable, commodity,
+                        icon_url, last_seen_at
+                    )
+                    SELECT
+                        assetid, appid, contextid, classid, instanceid, amount,
+                        name, market_hash_name, marketable, tradable, commodity,
+                        icon_url, last_seen_at
+                    FROM inventory_assets_legacy;
+                    DROP TABLE inventory_assets_legacy;
+                    CREATE INDEX idx_inventory_market_name
+                        ON inventory_assets(appid, market_hash_name);
+                    """
+                )
             defaults = {
                 "currency": Currency.CNY.value,
                 "default_strategy": PricingStrategy.ROBUST_MEDIAN.value,
@@ -217,7 +264,7 @@ class Database:
             db.execute(
                 """
                 CREATE UNIQUE INDEX idx_one_open_listing_per_asset
-                ON listings(assetid)
+                ON listings(appid, contextid, assetid)
                 WHERE state IN (
                     'planned', 'price_review', 'pending_confirmation', 'active'
                 )
@@ -327,8 +374,7 @@ class Database:
                     assetid, appid, contextid, classid, instanceid, amount, name,
                     market_hash_name, marketable, tradable, commodity, icon_url, last_seen_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(assetid) DO UPDATE SET
-                    appid=excluded.appid, contextid=excluded.contextid,
+                ON CONFLICT(appid, contextid, assetid) DO UPDATE SET
                     classid=excluded.classid, instanceid=excluded.instanceid,
                     amount=excluded.amount, name=excluded.name,
                     market_hash_name=excluded.market_hash_name,

@@ -112,13 +112,17 @@ def _listing_action_reference_time(
 
 
 def _is_same_listing_asset(
-    remote_listing: dict[str, object], assetid: str, appid: int
+    remote_listing: dict[str, object],
+    assetid: str,
+    appid: int,
+    contextid: str,
 ) -> bool:
     """判断 Steam 挂单是否对应同一个实体饰品。"""
     return (
         bool(assetid)
         and str(remote_listing.get("assetid") or "") == assetid
         and int(remote_listing.get("appid") or 0) == appid
+        and str(remote_listing.get("contextid") or "") == contextid
     )
 
 
@@ -296,6 +300,7 @@ class ListingManager:
         *,
         strategy_profile_id: int | None = None,
         assetids: list[str] | None = None,
+        asset_keys: set[tuple[int, str, str]] | None = None,
         minimum_buyer_price_minor: int = 3,
         maximum_buyer_price_minor: int | None = None,
         maximum_items: int | None = None,
@@ -313,6 +318,13 @@ class ListingManager:
             asset
             for asset in self.store.inventory(marketable_only=True)
             if assetids is None or str(asset["assetid"]) in assetids
+            if asset_keys is None
+            or (
+                int(asset["appid"]),
+                str(asset["contextid"]),
+                str(asset["assetid"]),
+            )
+            in asset_keys
             if str(asset["market_hash_name"]).casefold() not in excluded
         ]
         selected = selected[: maximum_items or settings.max_batch_items]
@@ -758,7 +770,10 @@ class ListingManager:
                         item
                         for item in unmatched
                         if _is_same_listing_asset(
-                            item, record.assetid, record.appid
+                            item,
+                            record.assetid,
+                            record.appid,
+                            record.contextid,
                         )
                     ),
                     None,
@@ -1071,10 +1086,43 @@ class ListingManager:
             result.errors.append(f"超时处理失败：{exc}")
             report(f"[2/4] 超时处理失败：{exc}")
 
-        assetids = [
-            str(asset["assetid"])
-            for asset in self.store.inventory(marketable_only=True)
+        marketable_assets = self.store.inventory(marketable_only=True)
+        open_asset_keys = {
+            (record.appid, record.contextid, record.assetid)
+            for record in self.store.listings(
+                [
+                    ListingState.PLANNED,
+                    ListingState.PRICE_REVIEW,
+                    ListingState.PENDING_CONFIRMATION,
+                    ListingState.ACTIVE,
+                ]
+            )
+        }
+        eligible_assets = [
+            asset
+            for asset in marketable_assets
+            if (
+                int(asset["appid"]),
+                str(asset["contextid"]),
+                str(asset["assetid"]),
+            )
+            not in open_asset_keys
         ]
+        skipped_open = len(marketable_assets) - len(eligible_assets)
+        asset_keys = {
+            (
+                int(asset["appid"]),
+                str(asset["contextid"]),
+                str(asset["assetid"]),
+            )
+            for asset in eligible_assets
+        }
+        assetids = [str(asset["assetid"]) for asset in eligible_assets]
+        report(
+            f"[3/4] 非黑名单可出售 {len(marketable_assets)} 件，"
+            f"已有开放任务跳过 {skipped_open} 件，"
+            f"实际待生成计划 {len(eligible_assets)} 件"
+        )
         report(
             f"[3/4] 开始同步 {len(assetids)} 件可出售库存的30天价格并生成计划"
         )
@@ -1096,6 +1144,7 @@ class ListingManager:
                     currency,
                     strategy_profile_id=profile.id,
                     assetids=assetids,
+                    asset_keys=asset_keys,
                     maximum_items=len(assetids),
                 )
                 result.plans_created = len(plans)

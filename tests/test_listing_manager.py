@@ -158,10 +158,12 @@ def test_pending_listing_can_match_exact_asset_without_listing_id() -> None:
         "listing_id": "9001",
         "assetid": "52940911278",
         "appid": 730,
+        "contextid": "2",
         "market_hash_name": "Same Name",
     }
-    assert _is_same_listing_asset(remote, "52940911278", 730) is True
-    assert _is_same_listing_asset(remote, "different-asset", 730) is False
+    assert _is_same_listing_asset(remote, "52940911278", 730, "2") is True
+    assert _is_same_listing_asset(remote, "52940911278", 730, "16") is False
+    assert _is_same_listing_asset(remote, "different-asset", 730, "2") is False
 
 
 def test_one_recent_sale_resolves_only_one_unmatched_pending_listing() -> None:
@@ -349,6 +351,7 @@ def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
         "[1/4] 挂单状态同步完成：更新 3 条",
         "[2/4] 开始检查全部非黑名单超时挂单",
         "[2/4] 超时检查完成：处理 1 条挂单",
+        "[3/4] 非黑名单可出售 0 件，已有开放任务跳过 0 件，实际待生成计划 0 件",
         "[3/4] 开始同步 0 件可出售库存的30天价格并生成计划",
         "[3/4] 没有可出售库存，跳过价格同步和计划生成",
         "[4/4] 开始执行 0 条待提交计划",
