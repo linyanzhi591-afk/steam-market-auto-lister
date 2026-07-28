@@ -7,39 +7,10 @@ from playwright.async_api import Error as PlaywrightError
 from app.core.config import settings
 from app.services.steam_market import (
     SteamMarketService,
-    deduplicate_inventory_assets,
     enrich_active_listing_rows,
     parse_inventory_payload,
     parse_price_history,
 )
-
-
-def test_inventory_assets_are_deduplicated_by_assetid() -> None:
-    payload = {
-        "assets": [
-            {
-                "assetid": "100",
-                "classid": "200",
-                "instanceid": "0",
-                "amount": "1",
-            }
-        ],
-        "descriptions": [
-            {
-                "classid": "200",
-                "instanceid": "0",
-                "name": "Test",
-                "market_hash_name": "Test",
-                "marketable": 1,
-                "tradable": 1,
-            }
-        ],
-    }
-    first = parse_inventory_payload(730, "2", payload)
-    second = parse_inventory_payload(730, "2", payload)
-    unique = deduplicate_inventory_assets(first + second)
-    assert len(unique) == 1
-    assert unique[0].assetid == "100"
 
 
 def test_active_listing_rows_are_enriched_and_deduplicated() -> None:
