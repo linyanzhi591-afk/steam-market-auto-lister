@@ -118,6 +118,11 @@ class ListingCancelRequest(BaseModel):
     listing_ids: list[int] = Field(min_length=1)
 
 
+class ListingCustomPriceRequest(BaseModel):
+    listing_ids: list[int] = Field(min_length=1)
+    custom_buyer_price_minor: int = Field(ge=3)
+
+
 class ListingRepriceRequest(BaseModel):
     listing_ids: list[int] = Field(min_length=1)
     strategy_profile_id: int | None = None

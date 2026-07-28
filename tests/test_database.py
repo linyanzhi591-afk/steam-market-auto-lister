@@ -474,3 +474,118 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
     assert restored.next_action_at == datetime(
         2026, 7, 4, tzinfo=UTC
     )
+
+
+def test_submission_metadata_survives_pending_cache_cleanup(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="测试",
+        market_hash_name="Test Item",
+        marketable=True,
+        tradable=True,
+    )
+    database.replace_inventory([asset])
+    profile = database.strategy_profile()
+    listing_id = database.create_listing(
+        database.inventory(marketable_only=True)[0],
+        PricingStrategy.ROBUST_MEDIAN,
+        900,
+        1035,
+        strategy_profile_id=profile.id,
+    )
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    database.update_listing(
+        listing_id,
+        state=ListingState.PENDING_CONFIRMATION,
+        stage=1,
+        strategy=PricingStrategy.ROBUST_MEDIAN,
+        listing_requested_at=requested_at.isoformat(),
+    )
+    record = database.listing(listing_id)
+    assert record is not None
+    submission_id = database.create_listing_submission(record, requested_at)
+    database.finish_listing_submission(
+        submission_id, steam_listing_id="new-listing"
+    )
+
+    database.clear_runtime_cache(preserve_active_listings=True)
+    assert database.listing(listing_id) is None
+    database.import_active_listings(
+        [
+            {
+                "listing_id": "new-listing",
+                "assetid": "100",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Test Item",
+                "buyer_price_minor": 1035,
+                "listed_at": "2026-07-25T00:00:00+00:00",
+            }
+        ]
+    )
+
+    restored = database.listings()[0]
+    assert restored.stage == 1
+    assert restored.strategy is PricingStrategy.ROBUST_MEDIAN
+    assert restored.listing_requested_at == requested_at
+    assert restored.active_since == requested_at
+    assert restored.next_action_at == requested_at.replace(day=28)
+
+
+def test_existing_active_listing_is_corrected_from_reprice_history(
+    tmp_path: Path,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = {
+        "assetid": "100",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "Test Item",
+    }
+    listing_id = database.create_listing(
+        asset, PricingStrategy.TREND, 1000, 1150
+    )
+    database.update_listing(
+        listing_id,
+        state=ListingState.ACTIVE,
+        steam_listing_id="old-listing",
+    )
+    record = database.listing(listing_id)
+    assert record is not None
+    database.create_reprice_history(
+        batch_id="batch-one",
+        listing_record_id=listing_id,
+        record=record,
+        new_seller_price_minor=900,
+        new_buyer_price_minor=1035,
+        reason="age_timeout",
+        new_stage=1,
+        strategy_profile_id=database.strategy_profile().id,
+    )
+    database.update_listing(
+        listing_id,
+        steam_listing_id="new-listing",
+        seller_price_minor=900,
+        buyer_price_minor=1035,
+    )
+
+    database.import_active_listings(
+        [
+            {
+                **asset,
+                "listing_id": "new-listing",
+                "buyer_price_minor": 1035,
+                "listed_at": "2026-07-25T00:00:00+00:00",
+            }
+        ]
+    )
+
+    restored = database.listing(listing_id)
+    assert restored is not None
+    assert restored.stage == 1
+    assert restored.strategy is PricingStrategy.ROBUST_MEDIAN
+    assert restored.next_action_at == datetime(2026, 7, 28, tzinfo=UTC)

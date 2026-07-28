@@ -457,6 +457,7 @@ class ListingManager:
             )
         results: list[ListingRecord] = []
         for listing_id in listing_ids:
+            submission_id: int | None = None
             record = self.store.listing(listing_id)
             if not record or record.state not in {
                 ListingState.PLANNED,
@@ -519,6 +520,9 @@ class ListingManager:
                 record = self.store.listing(record.id) or record
             try:
                 listing_requested_at = datetime.now(UTC)
+                submission_id = self.store.create_listing_submission(
+                    record, listing_requested_at
+                )
                 self.store.update_listing(
                     record.id,
                     listing_requested_at=listing_requested_at.isoformat(),
@@ -530,6 +534,12 @@ class ListingManager:
                     record.seller_price_minor,
                 )
                 steam_listing_id = payload.get("sell_listing_id") or payload.get("listingid")
+                self.store.finish_listing_submission(
+                    submission_id,
+                    steam_listing_id=(
+                        str(steam_listing_id) if steam_listing_id else None
+                    ),
+                )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PENDING_CONFIRMATION,
@@ -542,6 +552,10 @@ class ListingManager:
                     {"listing_id": record.id, "steam_listing_id": steam_listing_id},
                 )
             except (PermissionError, RuntimeError) as exc:
+                if submission_id is not None:
+                    self.store.finish_listing_submission(
+                        submission_id, error_message=str(exc)
+                    )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.FAILED,
@@ -553,6 +567,48 @@ class ListingManager:
             if updated:
                 results.append(updated)
         return results
+
+    def set_custom_price(
+        self, listing_ids: list[int], custom_buyer_price_minor: int
+    ) -> list[ListingRecord]:
+        if custom_buyer_price_minor > settings.max_unit_buyer_price_minor:
+            raise ValueError("自定义价格超过单件支付上限")
+        records = [
+            record
+            for listing_id in listing_ids
+            if (record := self.store.listing(listing_id))
+            and record.state in {ListingState.PLANNED, ListingState.FAILED}
+        ]
+        if not records:
+            raise ValueError("没有可设置自定义价格的新上架任务")
+        minimum_fee_price = 1 + int(
+            self.fee_options().get("minimum_total_fee", 2)
+        )
+        for record in records:
+            minimum = max(record.minimum_buyer_price_minor, minimum_fee_price)
+            if custom_buyer_price_minor < minimum:
+                raise ValueError(
+                    f"{record.market_hash_name} 的自定义价格低于最低上架价"
+                )
+
+        updated: list[ListingRecord] = []
+        for record in records:
+            seller_price = seller_receive_for_buyer_pay(
+                custom_buyer_price_minor, **self.fee_options()
+            )
+            self.store.update_listing(
+                record.id,
+                seller_price_minor=seller_price,
+                buyer_price_minor=buyer_pays_for_seller_receive(
+                    seller_price, **self.fee_options()
+                ),
+                price_source="custom",
+                error_message=None,
+                state=ListingState.PLANNED,
+            )
+            if refreshed := self.store.listing(record.id):
+                updated.append(refreshed)
+        return updated
 
     def resolve_price_review(
         self,
@@ -791,7 +847,11 @@ class ListingManager:
             time_warning = None
             if matched_by_name:
                 time_warning = NAME_MATCH_TIME_WARNING
-            elif match and record.listing_requested_at is None:
+            elif (
+                match
+                and record.state is ListingState.PENDING_CONFIRMATION
+                and record.listing_requested_at is None
+            ):
                 time_warning = MISSING_REQUEST_TIME_WARNING
             if match and record.state is ListingState.PENDING_CONFIRMATION:
                 stage = stages[min(record.stage, len(stages) - 1)]

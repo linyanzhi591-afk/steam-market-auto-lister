@@ -313,6 +313,81 @@ def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:
     assert options["minimum_total_fee"] == 200
 
 
+def test_custom_price_updates_all_matching_new_listing_tasks() -> None:
+    now = datetime.now(UTC)
+    records = {
+        listing_id: ListingRecord(
+            id=listing_id,
+            assetid=f"asset-{listing_id}",
+            appid=730,
+            contextid="2",
+            market_hash_name="Same Item",
+            state=state,
+            strategy=PricingStrategy.TREND,
+            stage=0,
+            seller_price_minor=100,
+            buyer_price_minor=115,
+            minimum_buyer_price_minor=15,
+            created_at=now,
+            updated_at=now,
+        )
+        for listing_id, state in (
+            (1, ListingState.PLANNED),
+            (2, ListingState.FAILED),
+        )
+    }
+
+    class Store:
+        def listing(self, listing_id):
+            return records.get(listing_id)
+
+        def update_listing(self, listing_id, **fields):
+            records[listing_id] = records[listing_id].model_copy(update=fields)
+
+    manager = ListingManager(store=Store(), market=object())
+    updated = manager.set_custom_price([1, 2], 575)
+
+    assert len(updated) == 2
+    assert {record.state for record in updated} == {ListingState.PLANNED}
+    assert {record.price_source for record in updated} == {"custom"}
+    assert {record.buyer_price_minor for record in updated} == {575}
+
+
+def test_custom_price_validates_entire_group_before_updating() -> None:
+    now = datetime.now(UTC)
+    records = {
+        listing_id: ListingRecord(
+            id=listing_id,
+            assetid=f"asset-{listing_id}",
+            appid=730,
+            contextid="2",
+            market_hash_name="Same Item",
+            state=ListingState.PLANNED,
+            strategy=PricingStrategy.TREND,
+            stage=0,
+            seller_price_minor=100,
+            buyer_price_minor=115,
+            minimum_buyer_price_minor=minimum,
+            created_at=now,
+            updated_at=now,
+        )
+        for listing_id, minimum in ((1, 15), (2, 600))
+    }
+
+    class Store:
+        def listing(self, listing_id):
+            return records.get(listing_id)
+
+        def update_listing(self, listing_id, **fields):
+            records[listing_id] = records[listing_id].model_copy(update=fields)
+
+    manager = ListingManager(store=Store(), market=object())
+    with pytest.raises(ValueError, match="低于最低上架价"):
+        manager.set_custom_price([1, 2], 575)
+
+    assert {record.buyer_price_minor for record in records.values()} == {115}
+
+
 def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
     class Store:
         def settings(self) -> AppSettings:

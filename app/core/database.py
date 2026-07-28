@@ -158,6 +158,29 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reprice_history_item
                     ON reprice_history(appid, market_hash_name, status, confirmed_at);
+
+                CREATE TABLE IF NOT EXISTS listing_submissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    listing_record_id INTEGER,
+                    assetid TEXT NOT NULL,
+                    appid INTEGER NOT NULL,
+                    contextid TEXT NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    strategy_profile_id INTEGER,
+                    stage INTEGER NOT NULL,
+                    seller_price_minor INTEGER NOT NULL,
+                    buyer_price_minor INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    steam_listing_id TEXT,
+                    status TEXT NOT NULL,
+                    error_message TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_listing_submissions_asset
+                    ON listing_submissions(
+                        appid, contextid, assetid, buyer_price_minor, requested_at
+                    );
                 """
             )
             inventory_columns = db.execute(
@@ -708,7 +731,7 @@ class Database:
                 market_hash_name = remote_name or "未知在售物品"
                 existing_by_listing = db.execute(
                     """
-                    SELECT id FROM listings
+                    SELECT * FROM listings
                     WHERE steam_listing_id = ?
                       AND state IN (
                           'planned', 'price_review',
@@ -723,7 +746,7 @@ class Database:
                 if remote_assetid and appid and remote_contextid:
                     existing_by_asset = db.execute(
                         """
-                        SELECT id FROM listings
+                        SELECT * FROM listings
                         WHERE appid = ? AND contextid = ? AND assetid = ?
                           AND state IN (
                               'planned', 'price_review',
@@ -764,7 +787,7 @@ class Database:
                     )
                 history = db.execute(
                     """
-                    SELECT new_stage, strategy_profile_id
+                    SELECT new_stage, strategy_profile_id, submitted_at
                     FROM reprice_history
                     WHERE appid = ? AND market_hash_name = ? AND assetid = ?
                       AND new_buyer_price_minor = ?
@@ -774,16 +797,55 @@ class Database:
                     """,
                     (appid, market_hash_name, assetid, buyer_price),
                 ).fetchone()
+                submission = db.execute(
+                    """
+                    SELECT * FROM listing_submissions
+                    WHERE appid = ? AND contextid = ? AND assetid = ?
+                      AND buyer_price_minor = ?
+                      AND status IN ('requested', 'submitted', 'active')
+                    ORDER BY
+                      CASE WHEN steam_listing_id = ? THEN 0 ELSE 1 END,
+                      requested_at DESC
+                    LIMIT 1
+                    """,
+                    (
+                        appid,
+                        contextid,
+                        assetid,
+                        buyer_price,
+                        steam_listing_id,
+                    ),
+                ).fetchone()
+                existing_profile = (
+                    profiles.get(existing["strategy_profile_id"])
+                    if existing and existing["strategy_profile_id"] is not None
+                    else None
+                )
                 active_profile = (
+                    profiles.get(submission["strategy_profile_id"])
+                    if submission and submission["strategy_profile_id"] is not None
+                    else None
+                ) or (
                     profiles.get(history["strategy_profile_id"])
                     if history and history["strategy_profile_id"] is not None
                     else None
-                ) or profile
+                ) or existing_profile or profile
                 stage_index = min(
-                    int(history["new_stage"]) if history else 0,
+                    (
+                        int(submission["stage"])
+                        if submission
+                        else int(history["new_stage"])
+                        if history
+                        else int(existing["stage"])
+                        if existing
+                        else 0
+                    ),
                     len(active_profile.stages) - 1,
                 )
                 active_stage = active_profile.stages[stage_index]
+                requested_at = (
+                    str(submission["requested_at"]) if submission else None
+                )
                 listed_at = str(item.get("listed_at") or "")
                 try:
                     listed_datetime = datetime.fromisoformat(listed_at)
@@ -792,7 +854,22 @@ class Database:
                     listed_datetime = listed_datetime.astimezone(UTC)
                 except ValueError:
                     listed_datetime = now
-                next_action = listed_datetime + timedelta(
+                reference_datetime = listed_datetime
+                if requested_at:
+                    try:
+                        requested_datetime = datetime.fromisoformat(requested_at)
+                        if requested_datetime.tzinfo is None:
+                            requested_datetime = requested_datetime.replace(tzinfo=UTC)
+                        requested_datetime = requested_datetime.astimezone(UTC)
+                        local_timezone = datetime.now().astimezone().tzinfo or UTC
+                        if (
+                            requested_datetime.astimezone(local_timezone).date()
+                            >= listed_datetime.astimezone(local_timezone).date()
+                        ):
+                            reference_datetime = requested_datetime
+                    except ValueError:
+                        requested_at = None
+                next_action = reference_datetime + timedelta(
                     hours=active_stage.duration_hours
                 )
                 if existing:
@@ -829,6 +906,13 @@ class Database:
                             buyer_price_minor = ?,
                             steam_listing_id = ?,
                             steam_listed_at = CASE WHEN ? != '' THEN ? ELSE steam_listed_at END,
+                            listing_requested_at =
+                                CASE WHEN ? IS NOT NULL THEN ? ELSE listing_requested_at END,
+                            strategy = ?,
+                            strategy_profile_id = ?,
+                            stage = ?,
+                            active_since = ?,
+                            next_action_at = ?,
                             error_message = NULL,
                             updated_at = ?
                         WHERE id = ?
@@ -848,10 +932,27 @@ class Database:
                             steam_listing_id,
                             str(item.get("listed_at") or ""),
                             str(item.get("listed_at") or ""),
+                            requested_at,
+                            requested_at,
+                            active_stage.pricing_source.value,
+                            active_profile.id,
+                            stage_index,
+                            reference_datetime.isoformat(),
+                            next_action.isoformat(),
                             utc_now(),
                             existing["id"],
                         ),
                     )
+                    if submission:
+                        db.execute(
+                            """
+                            UPDATE listing_submissions
+                            SET status = 'active', steam_listing_id = ?,
+                                error_message = NULL, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (steam_listing_id, utc_now(), submission["id"]),
+                        )
                     continue
                 try:
                     db.execute(
@@ -861,9 +962,11 @@ class Database:
                             strategy, strategy_profile_id, stage,
                             seller_price_minor, buyer_price_minor,
                             minimum_buyer_price_minor, steam_listing_id,
-                            steam_listed_at, active_since, next_action_at,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            steam_listed_at, listing_requested_at, active_since,
+                            next_action_at, price_source, created_at, updated_at
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        )
                         """,
                         (
                             assetid,
@@ -879,16 +982,84 @@ class Database:
                             minimum_buyer_price,
                             steam_listing_id,
                             listed_at or None,
-                            listed_datetime.isoformat(),
+                            requested_at,
+                            reference_datetime.isoformat(),
                             next_action.isoformat(),
+                            "strategy" if submission or history else "external",
                             now.isoformat(),
                             now.isoformat(),
                         ),
                     )
                 except sqlite3.IntegrityError:
                     continue
+                if submission:
+                    db.execute(
+                        """
+                        UPDATE listing_submissions
+                        SET status = 'active', steam_listing_id = ?,
+                            error_message = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (steam_listing_id, utc_now(), submission["id"]),
+                    )
                 imported += 1
         return imported
+
+    def create_listing_submission(
+        self, record: ListingRecord, requested_at: datetime
+    ) -> int:
+        timestamp = requested_at.astimezone(UTC).isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO listing_submissions(
+                    listing_record_id, assetid, appid, contextid,
+                    market_hash_name, strategy, strategy_profile_id, stage,
+                    seller_price_minor, buyer_price_minor, requested_at,
+                    status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?)
+                """,
+                (
+                    record.id,
+                    record.assetid,
+                    record.appid,
+                    record.contextid,
+                    record.market_hash_name,
+                    record.strategy.value,
+                    record.strategy_profile_id,
+                    record.stage,
+                    record.seller_price_minor,
+                    record.buyer_price_minor,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_listing_submission(
+        self,
+        submission_id: int,
+        *,
+        steam_listing_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        status = "failed" if error_message else "submitted"
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE listing_submissions
+                SET steam_listing_id = ?, status = ?, error_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    steam_listing_id,
+                    status,
+                    error_message,
+                    utc_now(),
+                    submission_id,
+                ),
+            )
 
     def listings(self, states: list[ListingState] | None = None) -> list[ListingRecord]:
         params: list[str] = []

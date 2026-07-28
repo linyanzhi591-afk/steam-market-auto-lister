@@ -17,6 +17,7 @@ from app.core.models import (
     DashboardSummary,
     FullRunResult,
     ListingCancelRequest,
+    ListingCustomPriceRequest,
     ListingExecuteRequest,
     ListingPlanRequest,
     ListingRecord,
@@ -266,6 +267,18 @@ async def execute_listing_plans(request: ListingExecuteRequest) -> list[ListingR
 @router.post("/listings/cancel", response_model=list[ListingRecord])
 def cancel_listing_plans(request: ListingCancelRequest) -> list[ListingRecord]:
     return listing_manager.cancel_new_listing_plans(request.listing_ids)
+
+
+@router.post("/listings/custom-price", response_model=list[ListingRecord])
+def set_listing_custom_price(
+    request: ListingCustomPriceRequest,
+) -> list[ListingRecord]:
+    try:
+        return listing_manager.set_custom_price(
+            request.listing_ids, request.custom_buyer_price_minor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/listings/reprice", response_model=list[ListingRecord])
