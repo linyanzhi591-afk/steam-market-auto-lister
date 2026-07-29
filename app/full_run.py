@@ -1,9 +1,16 @@
 import asyncio
 
 from app.core.database import database
-from app.core.models import SessionState
+from app.core.models import FullRunResult, SessionState
 from app.services.listing_manager import listing_manager
 from app.services.steam_session import steam_session_service
+
+
+def exit_code_for(result: FullRunResult) -> int:
+    """Price reviews need the local browser UI instead of a terminal-only error."""
+    if result.price_reviews:
+        return 2
+    return 1 if result.errors else 0
 
 
 async def run_once() -> int:
@@ -24,13 +31,16 @@ async def run_once() -> int:
         f"超时处理 {result.expired_processed}，计划 {result.plans_created}，"
         f"已提交 {result.listings_submitted}，异常价格 {result.price_reviews}"
     )
+    exit_code = exit_code_for(result)
+    if exit_code == 2:
+        return exit_code
     if result.errors:
         print(f"\n发现 {len(result.errors)} 个问题：")
         for index, error in enumerate(result.errors, 1):
             print(f"{index}. {error}")
         return 1
     print("完整运行成功，没有发现错误。")
-    return 0
+    return exit_code
 
 
 def main() -> None:

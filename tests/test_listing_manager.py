@@ -6,6 +6,7 @@ import pytest
 from app.core.models import (
     AppSettings,
     Currency,
+    FullRunResult,
     ListingRecord,
     ListingState,
     PricePoint,
@@ -15,6 +16,7 @@ from app.core.models import (
     StrategyStage,
     SyncResult,
 )
+from app.full_run import exit_code_for
 from app.services.listing_manager import (
     ListingManager,
     _as_points,
@@ -386,6 +388,12 @@ def test_custom_price_validates_entire_group_before_updating() -> None:
         manager.set_custom_price([1, 2], 575)
 
     assert {record.buyer_price_minor for record in records.values()} == {115}
+
+
+def test_price_reviews_request_the_browser_review_flow() -> None:
+    assert exit_code_for(FullRunResult(price_reviews=1)) == 2
+    assert exit_code_for(FullRunResult(errors=["同步失败"])) == 1
+    assert exit_code_for(FullRunResult()) == 0
 
 
 def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:

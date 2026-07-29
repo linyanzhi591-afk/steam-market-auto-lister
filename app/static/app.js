@@ -71,6 +71,10 @@ function earliestTime(values) {
   return parseable[0]?.value || available[0];
 }
 
+function marketListingUrl(item) {
+  return `https://steamcommunity.com/market/listings/${encodeURIComponent(item.appid)}/${encodeURIComponent(item.market_hash_name)}`;
+}
+
 function groupedTasks(items, keyForItem) {
   return Array.from(items.reduce((groups, item) => {
     const key = keyForItem(item);
@@ -353,8 +357,9 @@ function renderListings(items, blacklist) {
         <td>${item.strategy}</td>
         <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
         <td>${money(item.buyer_price_minor)}</td>
-        <td><button class="plan-custom-price secondary" type="button"
-          data-listing-ids="${item.listingIds.join(",")}">自定义价格</button></td>
+        <td><div class="actions"><button class="plan-custom-price secondary" type="button"
+          data-listing-ids="${item.listingIds.join(",")}">自定义价格</button>
+          <a class="market-link" href="${marketListingUrl(item)}" target="_blank" rel="noopener noreferrer">Steam 市场</a></div></td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
           item.error_message || ""
         )}</td>
@@ -384,6 +389,7 @@ function renderListings(items, blacklist) {
           <button class="review-choice" data-listing-ids="${item.listingIds.join(",")}" data-choice="reference" type="button">使用参考价</button>
           <button class="review-choice secondary" data-listing-ids="${item.listingIds.join(",")}" data-choice="strategy" type="button">使用策略价</button>
           <button class="review-choice secondary" data-listing-ids="${item.listingIds.join(",")}" data-choice="custom" type="button">自定义</button>
+          <a class="market-link" href="${marketListingUrl(item)}" target="_blank" rel="noopener noreferrer">Steam 市场</a>
           <button class="review-choice danger" data-listing-ids="${item.listingIds.join(",")}" data-choice="skip" type="button">暂不处理</button>
         </div></td>
       </tr>`).join("")

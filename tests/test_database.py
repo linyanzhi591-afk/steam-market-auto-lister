@@ -263,7 +263,10 @@ def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Pat
     active_asset = pending_asset.model_copy(
         update={"assetid": "101", "market_hash_name": "Active Test"}
     )
-    database.replace_inventory([pending_asset, active_asset])
+    review_asset = pending_asset.model_copy(
+        update={"assetid": "102", "market_hash_name": "Review Test"}
+    )
+    database.replace_inventory([pending_asset, active_asset, review_asset])
     pending_id = database.create_listing(
         next(
             item
@@ -295,6 +298,17 @@ def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Pat
         state=ListingState.ACTIVE,
         steam_listing_id="listing-101",
     )
+    review_id = database.create_listing(
+        next(
+            item
+            for item in database.inventory(marketable_only=True)
+            if item["assetid"] == "102"
+        ),
+        PricingStrategy.TREND,
+        1000,
+        1150,
+    )
+    database.update_listing(review_id, state=ListingState.PRICE_REVIEW)
 
     database.clear_runtime_cache(preserve_active_listings=True)
 
@@ -302,6 +316,7 @@ def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Pat
     active = database.listing(active_id)
     assert active is not None
     assert active.steam_listing_id == "listing-101"
+    assert database.listing(review_id) is not None
     assert database.inventory(marketable_only=False) == []
 
 

@@ -381,7 +381,7 @@ class Database:
                 db.execute(
                     """
                     DELETE FROM listings
-                    WHERE state != 'active'
+                WHERE state NOT IN ('active', 'price_review')
                     """
                 )
             else:

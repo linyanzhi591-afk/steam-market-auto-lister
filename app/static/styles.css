@@ -29,6 +29,8 @@ button { border: 0; border-radius: 9px; padding: 9px 12px; color: #07110d; backg
 button.secondary { color: #b9c8c2; background: #24312c; }
 button.danger { color: #ffe6e4; background: #7a2621; }
 button:disabled { opacity: .5; cursor: wait; }
+.market-link { display: inline-flex; align-items: center; border-radius: 9px; padding: 9px 12px; color: #b9c8c2; background: #24312c; font-weight: 700; text-decoration: none; }
+.market-link:hover { color: #ecf4f0; background: #304138; }
 .actions { display: flex; gap: 8px; }
 .strategy-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 20px; }
 .strategy { padding: 16px; border: 1px solid #263730; border-radius: 12px; background: #0d1311; }
