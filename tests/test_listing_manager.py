@@ -3,10 +3,12 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from app.core.database import Database
 from app.core.models import (
     AppSettings,
     Currency,
     FullRunResult,
+    InventoryAsset,
     ListingRecord,
     ListingState,
     PricePoint,
@@ -24,6 +26,81 @@ from app.services.listing_manager import (
     _is_same_listing_asset,
     _listing_action_reference_time,
 )
+
+
+def test_expired_reprice_reports_delist_and_relist(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "app.services.listing_manager.settings.dry_run", False
+    )
+    monkeypatch.setattr(
+        "app.services.listing_manager.settings.allow_market_writes", True
+    )
+    store = Database(tmp_path / "reprice-progress.sqlite3")
+    store.initialize()
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="asset-1",
+        classid="class-1",
+        name="测试饰品",
+        market_hash_name="Test Item",
+        marketable=True,
+        tradable=True,
+    )
+    store.replace_inventory([asset])
+    listing_id = store.create_listing(
+        dict(store.inventory(marketable_only=True)[0]),
+        PricingStrategy.TREND,
+        1000,
+        1150,
+        state=ListingState.ACTIVE,
+    )
+    store.update_listing(
+        listing_id,
+        steam_listing_id="listing-1",
+        next_action_at=(datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+    )
+    now = datetime.now(UTC)
+    store.save_prices(
+        730,
+        "Test Item",
+        Currency.CNY.value,
+        [
+            ((now - timedelta(days=index)).isoformat(), 1150, 1)
+            for index in range(24)
+        ],
+    )
+
+    class Market:
+        async def update_price_history(self, *_args):
+            return None
+
+        async def cancel_listing(self, listing_id):
+            assert listing_id == "listing-1"
+
+        async def create_listing(
+            self, appid, contextid, assetid, seller_price_minor
+        ):
+            assert (appid, contextid, assetid) == (730, "2", "asset-1")
+            assert seller_price_minor > 0
+            return {"sell_listing_id": "listing-2"}
+
+    progress: list[str] = []
+    processed = asyncio.run(
+        ListingManager(store=store, market=Market()).process_expired(
+            Currency.CNY, progress=progress.append
+        )
+    )
+
+    assert processed == 1
+    assert progress[0].startswith(
+        "[2/4] 调价下架完成：Test Item，原价 11.50，目标价 "
+    )
+    assert progress[1].startswith(
+        "[2/4] 调价重新上架完成：Test Item，买家支付 "
+    )
 
 
 def test_plan_explains_missing_price_history() -> None:
@@ -416,7 +493,10 @@ def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
         async def sync_states(self) -> SyncResult:
             return SyncResult(listings_updated=3)
 
-        async def process_expired(self, _currency: Currency) -> int:
+        async def process_expired(
+            self, _currency: Currency, progress=None
+        ) -> int:
+            assert progress is not None
             return 1
 
     progress: list[str] = []

@@ -447,7 +447,13 @@ class ListingManager:
             raise ValueError(f"没有可用的30天价格数据：{names}；请先成功同步价格")
         return [record for listing_id in created if (record := self.store.listing(listing_id))]
 
-    async def execute(self, listing_ids: list[int], confirmation_text: str) -> list[ListingRecord]:
+    async def execute(
+        self,
+        listing_ids: list[int],
+        confirmation_text: str,
+        progress: Callable[[str], None] | None = None,
+        success_action: str = "上架完成",
+    ) -> list[ListingRecord]:
         if confirmation_text != EXECUTE_CONFIRMATION:
             raise PermissionError("真实市场操作确认文本不匹配")
         if settings.dry_run or not settings.allow_market_writes:
@@ -551,6 +557,11 @@ class ListingManager:
                     record.assetid,
                     {"listing_id": record.id, "steam_listing_id": steam_listing_id},
                 )
+                if progress:
+                    progress(
+                        f"{success_action}：{record.market_hash_name}，"
+                        f"买家支付 {record.buyer_price_minor / 100:.2f}"
+                    )
             except (PermissionError, RuntimeError) as exc:
                 if submission_id is not None:
                     self.store.finish_listing_submission(
@@ -980,7 +991,11 @@ class ListingManager:
         reconciled = self.store.reconcile_pending_reprices()
         return SyncResult(listings_updated=imported + reconciled)
 
-    async def process_expired(self, currency: Currency) -> int:
+    async def process_expired(
+        self,
+        currency: Currency,
+        progress: Callable[[str], None] | None = None,
+    ) -> int:
         now = datetime.now(UTC)
         processed = 0
         resubmit_ids: list[int] = []
@@ -1053,6 +1068,12 @@ class ListingManager:
                     reason="age_timeout",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
+                if progress:
+                    progress(
+                        f"[2/4] 调价下架完成：{record.market_hash_name}，"
+                        f"原价 {record.buyer_price_minor / 100:.2f}，"
+                        f"目标价 {buyer_price / 100:.2f}"
+                    )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PLANNED,
@@ -1082,7 +1103,12 @@ class ListingManager:
                 self.store.update_listing(record.id, error_message=str(exc))
                 continue
         if resubmit_ids and settings.allow_market_writes and not settings.dry_run:
-            await self.execute(resubmit_ids, EXECUTE_CONFIRMATION)
+            await self.execute(
+                resubmit_ids,
+                EXECUTE_CONFIRMATION,
+                progress=progress,
+                success_action="[2/4] 调价重新上架完成",
+            )
         return processed
 
     async def full_run(
@@ -1130,7 +1156,9 @@ class ListingManager:
             report(f"[1/4] 挂单同步失败：{exc}")
         report("[2/4] 开始检查全部非黑名单超时挂单")
         try:
-            result.expired_processed = await self.process_expired(currency)
+            result.expired_processed = await self.process_expired(
+                currency, progress=report
+            )
             report(
                 f"[2/4] 超时检查完成：处理 {result.expired_processed} 条挂单"
             )
@@ -1244,7 +1272,10 @@ class ListingManager:
         if pending_ids:
             try:
                 submitted = await self.execute(
-                    pending_ids, EXECUTE_CONFIRMATION
+                    pending_ids,
+                    EXECUTE_CONFIRMATION,
+                    progress=report,
+                    success_action="[4/4] 新上架完成",
                 )
                 result.listings_submitted = sum(
                     record.state is ListingState.PENDING_CONFIRMATION
