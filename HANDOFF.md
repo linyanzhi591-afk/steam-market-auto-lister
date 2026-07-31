@@ -4,9 +4,10 @@
 `develop`，目录 `D:\tools\steam-market-auto-lister-dev`；稳定版目录为 `D:\tools\steam-market-auto-lister`，勿主动改动或推送。
 
 ## 最新提交
-本次提交：按四字段分组数量同步 Steam 当前在售并恢复本地策略。
+本次提交：修复在售同步复建任务时的同资产唯一约束冲突。
 
 ## 已完成内容
+- `sync_active_listing_groups` 遇到提交记录仍指向已清理的旧任务、但同一资产已有开放任务时，复用现有开放任务并修正 `listing_submissions.listing_record_id`，不再重复插入同一 `(appid, contextid, assetid)`。
 - 库存、挂单和待确认使用 `(appid, contextid, assetid)` 复合键，旧 SQLite 自动迁移。
 - Steam 当前在售同步仅按 `(appid, contextid, market_hash_name, buyer_price_minor)` 分组并比较数量；Listing ID、Asset ID 和上架日期不参与匹配、确认或策略恢复。
 - 分组内从每条任务最新的 `listing_submissions` 恢复策略、策略配置与阶段；旧数据缺少提交记录时由 `reprice_history` 按同一分组键补齐，避免错误回退为 `trend`。
@@ -17,8 +18,8 @@
 - `run-full-once.bat` 完整运行时会在 Steam 操作成功后同步打印饰品明细：超时调价分别打印下架与重新上架，普通任务打印新上架；日志包含饰品名和买家支付价格，调价下架还包含原价与目标价。业务判断和执行顺序未改动。
 
 ## 验证
-- `.venv\Scripts\python.exe -m pytest -q`：58 项通过。
-- `.venv\Scripts\python.exe -m ruff check app tests`：通过。
+- `.venv\Scripts\python.exe -m pytest -q tests\test_database.py tests\test_listing_manager.py`：32 项通过。
+- `.venv\Scripts\python.exe -m ruff check app\core\database.py tests\test_database.py`：通过。
 - `node --check app\static\app.js`：通过。
 
 ## 未完成事项

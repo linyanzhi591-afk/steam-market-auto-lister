@@ -448,6 +448,59 @@ def test_group_quantity_match_ignores_listing_asset_and_date(tmp_path: Path) -> 
     )
 
 
+def test_group_sync_reuses_open_listing_when_submission_reference_is_stale(
+    tmp_path: Path,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    stale_listing_id = create_submitted_group(database, 1)[0]
+    stale_record = database.listing(stale_listing_id)
+    assert stale_record is not None
+    with database.connect() as db:
+        db.execute("DELETE FROM listings WHERE id = ?", (stale_listing_id,))
+
+    replacement_id = database.create_listing(
+        {
+            "assetid": stale_record.assetid,
+            "appid": stale_record.appid,
+            "contextid": stale_record.contextid,
+            "market_hash_name": stale_record.market_hash_name,
+        },
+        PricingStrategy.ROBUST_MEDIAN,
+        435,
+        500,
+    )
+    database.update_listing(
+        replacement_id,
+        state=ListingState.ACTIVE,
+        price_source="external",
+        sync_status=ListingSyncStatus.EXTERNAL,
+    )
+
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": "remote-listing",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+                "buyer_price_minor": 1035,
+            }
+        ]
+    )
+
+    assert len(database.listings()) == 1
+    restored = database.listing(replacement_id)
+    assert restored is not None
+    assert restored.state is ListingState.ACTIVE
+    assert restored.sync_status is ListingSyncStatus.MATCHED
+    assert restored.buyer_price_minor == 1035
+    with database.connect() as db:
+        submission = db.execute(
+            "SELECT listing_record_id FROM listing_submissions"
+        ).fetchone()
+    assert submission["listing_record_id"] == replacement_id
+
+
 @pytest.mark.parametrize(
     ("local_count", "steam_count", "matched", "pending", "external"),
     [(2, 3, 2, 0, 1), (3, 2, 2, 1, 0)],

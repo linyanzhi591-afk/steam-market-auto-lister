@@ -858,6 +858,25 @@ class Database:
 
             listing_rows = db.execute("SELECT * FROM listings ORDER BY id").fetchall()
             listings_by_id = {int(row["id"]): row for row in listing_rows}
+            unique_open_rows = [
+                row
+                for row in listing_rows
+                if row["state"]
+                in {
+                    ListingState.PLANNED.value,
+                    ListingState.PRICE_REVIEW.value,
+                    ListingState.PENDING_CONFIRMATION.value,
+                    ListingState.ACTIVE.value,
+                }
+            ]
+            open_listings_by_asset = {
+                (
+                    int(row["appid"]),
+                    str(row["contextid"]),
+                    str(row["assetid"]),
+                ): row
+                for row in unique_open_rows
+            }
             open_rows = [
                 row
                 for row in listing_rows
@@ -911,6 +930,18 @@ class Database:
                         if listing_record_id is not None
                         else None
                     )
+                    existing_open = open_listings_by_asset.get(
+                        (
+                            int(metadata["appid"]),
+                            str(metadata["contextid"]),
+                            str(metadata["assetid"]),
+                        )
+                    )
+                    if existing_open is not None and (
+                        existing is None
+                        or int(existing["id"]) != int(existing_open["id"])
+                    ):
+                        existing = existing_open
                     profile = (
                         profiles.get(metadata["strategy_profile_id"])
                         if metadata["strategy_profile_id"] is not None
@@ -979,7 +1010,7 @@ class Database:
                                 existing["id"],
                             ),
                         )
-                        handled_listing_ids.add(int(existing["id"]))
+                        actual_listing_id = int(existing["id"])
                     else:
                         cursor = db.execute(
                             """
@@ -1019,16 +1050,19 @@ class Database:
                                 now_text,
                             ),
                         )
-                        handled_listing_ids.add(int(cursor.lastrowid))
+                        actual_listing_id = int(cursor.lastrowid)
+                    handled_listing_ids.add(actual_listing_id)
 
                     if int(metadata["id"]) > 0:
                         db.execute(
                             """
                             UPDATE listing_submissions
-                            SET status = ?, error_message = ?, updated_at = ?
+                            SET listing_record_id = ?, status = ?,
+                                error_message = ?, updated_at = ?
                             WHERE id = ?
                             """,
                             (
+                                actual_listing_id,
                                 "active" if is_matched else "submitted",
                                 mismatch_message,
                                 now_text,
