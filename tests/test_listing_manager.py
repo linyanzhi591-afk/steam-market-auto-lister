@@ -136,6 +136,37 @@ def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:
     assert options["minimum_total_fee"] == 200
 
 
+def test_stage_price_uses_actual_minimum_buyer_price() -> None:
+    class Session:
+        def status(self) -> SessionStatus:
+            return SessionStatus(
+                state=SessionState.LOGGED_IN,
+                wallet_fee_minimum=10,
+                wallet_fee_base=2,
+                message="ok",
+            )
+
+    class Market:
+        session = Session()
+
+    manager = ListingManager(store=object(), market=Market())
+    points = [
+        PricePoint(timestamp=datetime.now(UTC), price_minor=1, volume=1)
+    ]
+    stage = StrategyStage(
+        name="最低价格",
+        pricing_source=PricingStrategy.ROBUST_MEDIAN,
+        duration_hours=24,
+    )
+    seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_buyer_price_minor=1,
+    )
+    assert seller_price == 1
+    assert buyer_price == 14
+
+
 def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
     class Store:
         def settings(self) -> AppSettings:

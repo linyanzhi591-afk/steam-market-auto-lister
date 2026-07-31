@@ -53,6 +53,20 @@ def test_wallet_minimum_fee_and_base_are_applied() -> None:
     assert seller_receive_for_buyer_pay(buyer_pays, **options) == 100
 
 
+def test_buyer_price_below_actual_minimum_is_rejected() -> None:
+    options = {
+        "steam_fee_minimum": 10,
+        "steam_fee_base": 2,
+        "publisher_fee_minimum": 1,
+        "minimum_total_fee": 2,
+    }
+    minimum_buyer_pay = buyer_pays_for_seller_receive(1, **options)
+    assert minimum_buyer_pay == 14
+    with pytest.raises(ValueError, match="买家支付金额过低"):
+        seller_receive_for_buyer_pay(minimum_buyer_pay - 1, **options)
+    assert seller_receive_for_buyer_pay(minimum_buyer_pay, **options) == 1
+
+
 @pytest.mark.parametrize(
     ("minimum_total_fee", "expected"),
     [(200, 201), (14, 15)],

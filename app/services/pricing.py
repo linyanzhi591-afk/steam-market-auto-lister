@@ -46,7 +46,16 @@ def seller_receive_for_buyer_pay(
     minimum_total_fee: int = 2,
 ) -> int:
     """用整数搜索反算不超过买家支付价的最大卖家到账金额。"""
-    if buyer_pay_minor < 1 + minimum_total_fee:
+    minimum_buyer_pay = buyer_pays_for_seller_receive(
+        1,
+        steam_fee_rate=steam_fee_rate,
+        publisher_fee_rate=publisher_fee_rate,
+        steam_fee_minimum=steam_fee_minimum,
+        steam_fee_base=steam_fee_base,
+        publisher_fee_minimum=publisher_fee_minimum,
+        minimum_total_fee=minimum_total_fee,
+    )
+    if buyer_pay_minor < minimum_buyer_pay:
         raise ValueError("买家支付金额过低")
     low, high = 1, buyer_pay_minor
     while low <= high:

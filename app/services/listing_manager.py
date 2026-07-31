@@ -120,11 +120,12 @@ class ListingManager:
         current_buyer_price_minor: int | None = None,
     ) -> tuple[int, int]:
         pricing_options = self.pricing_options(stage)
+        fee_options = self.fee_options()
         decision = calculate_price(
             stage.pricing_source,
             points,
             current_lowest_minor=current_lowest_minor,
-            fee_options=self.fee_options(),
+            fee_options=fee_options,
             pricing_options=pricing_options,
         )
         median_decision = calculate_price(
@@ -139,10 +140,9 @@ class ListingManager:
         median_floor = round(
             median_decision.price_minor * stage.median_floor_percent / 100
         )
-        fee_options = self.fee_options()
+        minimum_buyer_pay = buyer_pays_for_seller_receive(1, **fee_options)
         buyer_target = max(
-            1,
-            1 + int(fee_options.get("minimum_total_fee", 2)),
+            minimum_buyer_pay,
             adjusted,
             minimum_buyer_price_minor,
             stage.absolute_floor_minor,
