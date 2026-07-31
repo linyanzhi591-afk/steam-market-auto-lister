@@ -28,6 +28,12 @@ class ListingState(StrEnum):
     FAILED = "failed"
 
 
+class ListingSyncStatus(StrEnum):
+    MATCHED = "matched"
+    EXTERNAL = "external"
+    PENDING_MATCH = "pending_match"
+
+
 class PricingStrategy(StrEnum):
     ROBUST_MEDIAN = "robust_median"
     MARKET_FOLLOW = "market_follow"
@@ -94,6 +100,7 @@ class ListingRecord(BaseModel):
     price_difference_percent: float | None = None
     active_since: datetime | None = None
     next_action_at: datetime | None = None
+    sync_status: ListingSyncStatus = ListingSyncStatus.PENDING_MATCH
     created_at: datetime
     updated_at: datetime
 

@@ -1,9 +1,8 @@
 import asyncio
-import re
 import sqlite3
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, datetime
 
 from playwright.async_api import Error as PlaywrightError
 
@@ -29,11 +28,9 @@ from app.services.pricing import (
 from app.services.steam_market import SteamMarketService, steam_market_service
 
 EXECUTE_CONFIRMATION = "我确认执行真实市场操作"
-NAME_MATCH_TIME_WARNING = "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间"
-MISSING_REQUEST_TIME_WARNING = "缺少本地上架请求时间，已使用 Steam 上架时间"
-TIME_REFERENCE_WARNINGS = {
-    NAME_MATCH_TIME_WARNING,
-    MISSING_REQUEST_TIME_WARNING,
+LEGACY_TIME_REFERENCE_WARNINGS = {
+    "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间",
+    "缺少本地上架请求时间，已使用 Steam 上架时间",
 }
 
 
@@ -50,104 +47,6 @@ def _as_points(
         )
         for row in rows
     ]
-
-
-def _parse_steam_listed_at(
-    listed_at: object,
-    now: datetime,
-    display_timezone: tzinfo | None = None,
-) -> datetime | None:
-    if not isinstance(listed_at, str) or not listed_at:
-        return None
-    try:
-        reference_time = datetime.fromisoformat(listed_at)
-    except ValueError:
-        chinese_date = re.fullmatch(r"\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*", listed_at)
-        if not chinese_date:
-            return None
-        month, day = (int(value) for value in chinese_date.groups())
-        local_timezone = display_timezone or datetime.now().astimezone().tzinfo or UTC
-        local_now = now.astimezone(local_timezone)
-        try:
-            reference_time = datetime(
-                local_now.year, month, day, tzinfo=local_timezone
-            )
-        except ValueError:
-            return None
-        # 跨年时，Steam 页面显示的无年份日期可能属于上一年。
-        if reference_time > local_now:
-            reference_time = reference_time.replace(year=local_now.year - 1)
-        return reference_time
-    if reference_time.tzinfo is None:
-        reference_time = reference_time.replace(tzinfo=UTC)
-    return reference_time.astimezone(UTC)
-
-
-def _listing_action_reference_time(
-    remote_listing: dict[str, object],
-    fallback_listed_at: str | None,
-    now: datetime,
-    *,
-    listing_requested_at: datetime | None = None,
-    force_steam_time: bool = False,
-    display_timezone: tzinfo | None = None,
-) -> datetime:
-    """按日期比较本地请求时间与 Steam 上架日期，选择计时基准。"""
-    steam_time = _parse_steam_listed_at(
-        remote_listing.get("listed_at") or fallback_listed_at,
-        now,
-        display_timezone,
-    )
-    if force_steam_time or listing_requested_at is None:
-        return steam_time or now
-    requested_at = listing_requested_at.astimezone(UTC)
-    local_timezone = display_timezone or datetime.now().astimezone().tzinfo or UTC
-    if (
-        steam_time is not None
-        and requested_at.astimezone(local_timezone).date()
-        < steam_time.astimezone(local_timezone).date()
-    ):
-        return steam_time
-    return requested_at
-
-
-def _is_same_listing_asset(
-    remote_listing: dict[str, object],
-    assetid: str,
-    appid: int,
-    contextid: str,
-) -> bool:
-    """判断 Steam 挂单是否对应同一个实体饰品。"""
-    return (
-        bool(assetid)
-        and str(remote_listing.get("assetid") or "") == assetid
-        and int(remote_listing.get("appid") or 0) == appid
-        and str(remote_listing.get("contextid") or "") == contextid
-    )
-
-
-def _consume_recent_sale(
-    recent_sales: list[tuple[str, datetime | None]],
-    market_hash_name: str,
-    *,
-    requested_at: datetime | None = None,
-) -> bool:
-    """消费一条匹配的售出记录；pending 还要求售出日期不早于请求日期。"""
-    local_timezone = datetime.now().astimezone().tzinfo or UTC
-    for index, (sale_name, sold_at) in enumerate(recent_sales):
-        if sale_name != market_hash_name:
-            continue
-        if requested_at is not None:
-            if sold_at is None:
-                continue
-            if (
-                sold_at.astimezone(local_timezone).date()
-                < requested_at.astimezone(local_timezone).date()
-            ):
-                continue
-        recent_sales.pop(index)
-        return True
-    return False
 
 
 class ListingManager:
@@ -366,7 +265,7 @@ class ListingManager:
             price_difference_percent = None
             state = ListingState.PLANNED
             reference = self.store.latest_active_age_reprice(
-                item_key[0], item_key[1]
+                item_key[0], str(asset["contextid"]), item_key[1]
             )
             if reference:
                 median_price = calculate_price(
@@ -472,7 +371,7 @@ class ListingManager:
                 continue
             if record.price_source == "age_reprice_reference":
                 reference = self.store.latest_active_age_reprice(
-                    record.appid, record.market_hash_name
+                    record.appid, record.contextid, record.market_hash_name
                 )
                 if not reference:
                     if record.strategy_buyer_price_minor is not None:
@@ -804,192 +703,20 @@ class ListingManager:
         ]
 
     async def sync_states(self) -> SyncResult:
+        """按四字段分组数量同步，不按挂单、资产或日期匹配。"""
         remote = await self.market.active_listings()
-        now = datetime.now(UTC)
-        recent_sales: list[tuple[str, datetime | None]] = []
-        for sale in await self.market.recent_sales():
-            if isinstance(sale, str):
-                recent_sales.append((sale, None))
-                continue
-            name = str(sale.get("market_hash_name") or "")
-            sold_at = _parse_steam_listed_at(sale.get("sold_at"), now)
-            if name:
-                recent_sales.append((name, sold_at))
-        imported = self.store.import_active_listings(remote, self.fee_options())
-        reconciled = self.store.reconcile_pending_reprices()
-        by_id = {str(item["listing_id"]): item for item in remote}
-        unmatched = list(remote)
-        updated = imported + reconciled
-        open_records = self.store.listings(
-            [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
+        updated = self.store.sync_active_listing_groups(
+            remote, self.fee_options()
         )
-        missing_active: list[ListingRecord] = []
-        missing_pending: list[ListingRecord] = []
-        for record in open_records:
-            _profile_id, stages = self.stages(
-                record.strategy_profile_id, record.strategy
-            )
-            matched_by_name = False
-            match = by_id.get(record.steam_listing_id or "")
-            if match is None and record.state is ListingState.PENDING_CONFIRMATION:
-                match = next(
-                    (
-                        item
-                        for item in unmatched
-                        if _is_same_listing_asset(
-                            item,
-                            record.assetid,
-                            record.appid,
-                            record.contextid,
-                        )
-                    ),
-                    None,
-                )
-            if match is None and record.state is ListingState.PENDING_CONFIRMATION:
-                match = next(
-                    (
-                        item
-                        for item in unmatched
-                        if item["market_hash_name"] == record.market_hash_name
-                    ),
-                    None,
-                )
-                matched_by_name = match is not None
-            time_warning = None
-            if matched_by_name:
-                time_warning = NAME_MATCH_TIME_WARNING
-            elif (
-                match
-                and record.state is ListingState.PENDING_CONFIRMATION
-                and record.listing_requested_at is None
-            ):
-                time_warning = MISSING_REQUEST_TIME_WARNING
-            if match and record.state is ListingState.PENDING_CONFIRMATION:
-                stage = stages[min(record.stage, len(stages) - 1)]
-                listed_at = _listing_action_reference_time(
-                    match,
-                    record.steam_listed_at,
-                    now,
-                    listing_requested_at=record.listing_requested_at,
-                    force_steam_time=matched_by_name,
-                )
-                next_action = listed_at + timedelta(hours=stage.duration_hours)
-                self.store.update_listing(
-                    record.id,
-                    state=ListingState.ACTIVE,
-                    steam_listing_id=str(match["listing_id"]),
-                    steam_listed_at=str(match.get("listed_at") or "") or None,
-                    active_since=listed_at.isoformat(),
-                    next_action_at=next_action.isoformat(),
-                    error_message=time_warning,
-                )
-                if time_warning:
-                    self.store.audit(
-                        "listing.time_reference_anomaly",
-                        record.assetid,
-                        {
-                            "listing_record_id": record.id,
-                            "steam_listing_id": str(match["listing_id"]),
-                            "warning": time_warning,
-                            "steam_listed_at": match.get("listed_at"),
-                            "listing_requested_at": (
-                                record.listing_requested_at.isoformat()
-                                if record.listing_requested_at
-                                else None
-                            ),
-                        },
-                    )
-                self.store.confirm_reprice_history(
-                    record.id, str(match["listing_id"])
-                )
-                if match in unmatched:
-                    unmatched.remove(match)
-                updated += 1
-            elif match and record.state is ListingState.ACTIVE:
-                # 兼容旧数据：此前可能以同步时间写入了 next_action_at，
-                # 每次同步都用 Steam 上架日期校正一次。
-                stage = stages[min(record.stage, len(stages) - 1)]
-                listed_at = _listing_action_reference_time(
-                    match,
-                    record.steam_listed_at,
-                    now,
-                    listing_requested_at=record.listing_requested_at,
-                )
-                next_action = listed_at + timedelta(hours=stage.duration_hours)
-                expected_next_action = next_action.isoformat()
-                if record.next_action_at != next_action or time_warning:
-                    self.store.update_listing(
-                        record.id,
-                        steam_listed_at=str(match.get("listed_at") or "") or None,
-                        active_since=listed_at.isoformat(),
-                        next_action_at=expected_next_action,
-                        error_message=time_warning,
-                    )
-                    updated += 1
-                if time_warning:
-                    self.store.audit(
-                        "listing.time_reference_anomaly",
-                        record.assetid,
-                        {
-                            "listing_record_id": record.id,
-                            "steam_listing_id": str(match["listing_id"]),
-                            "warning": time_warning,
-                            "steam_listed_at": match.get("listed_at"),
-                            "listing_requested_at": None,
-                        },
-                    )
-                if match in unmatched:
-                    unmatched.remove(match)
-            elif not match and record.state is ListingState.ACTIVE:
-                missing_active.append(record)
-            elif not match and record.state is ListingState.PENDING_CONFIRMATION:
-                missing_pending.append(record)
-
-        # 已同步为 active 的挂单证据更强，优先消耗同名售出记录。
-        for record in missing_active:
-            if _consume_recent_sale(recent_sales, record.market_hash_name):
-                state = ListingState.SOLD
-            else:
-                state = ListingState.PAUSED
-            self.store.update_listing(record.id, state=state)
-            updated += 1
-
-        # 挂单可能在两次同步之间完成确认并立即售出，因而从未进入本地 active。
-        for record in missing_pending:
-            if not _consume_recent_sale(
-                recent_sales,
-                record.market_hash_name,
-                requested_at=record.listing_requested_at,
-            ):
-                continue
-            self.store.update_listing(
-                record.id,
-                state=ListingState.SOLD,
-                error_message=None,
-            )
-            self.store.mark_reprice_history_sold(record.id)
-            self.store.audit(
-                "listing.sold_before_activation",
-                record.assetid,
-                {
-                    "listing_record_id": record.id,
-                    "market_hash_name": record.market_hash_name,
-                    "listing_requested_at": (
-                        record.listing_requested_at.isoformat()
-                        if record.listing_requested_at
-                        else None
-                    ),
-                },
-            )
-            updated += 1
         return SyncResult(listings_updated=updated)
 
     async def refresh_current_listings(self) -> SyncResult:
         """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
         remote = await self.market.active_listings()
-        imported = self.store.import_active_listings(remote, self.fee_options())
-        reconciled = self.store.reconcile_pending_reprices()
-        return SyncResult(listings_updated=imported + reconciled)
+        updated = self.store.sync_active_listing_groups(
+            remote, self.fee_options()
+        )
+        return SyncResult(listings_updated=updated)
 
     async def process_expired(
         self,
@@ -1165,7 +892,7 @@ class ListingManager:
             for record in self.store.listings([ListingState.ACTIVE]):
                 if record.error_message:
                     message = f"{record.market_hash_name}：{record.error_message}"
-                    if record.error_message in TIME_REFERENCE_WARNINGS:
+                    if record.error_message in LEGACY_TIME_REFERENCE_WARNINGS:
                         result.warnings.append(message)
                         report(f"[2/4] 时间基准警告：{message}")
                     else:

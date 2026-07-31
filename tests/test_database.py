@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ from app.core.models import (
     Currency,
     InventoryAsset,
     ListingState,
+    ListingSyncStatus,
     PricingStrategy,
     StageAction,
     StrategyProfileInput,
@@ -21,6 +22,46 @@ def make_database(path: Path) -> Database:
     database = Database(path)
     database.initialize()
     return database
+
+
+def create_submitted_group(
+    database: Database,
+    count: int,
+    *,
+    buyer_price_minor: int = 1035,
+) -> list[int]:
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    profile = database.strategy_profile()
+    listing_ids: list[int] = []
+    for index in range(count):
+        listing_id = database.create_listing(
+            {
+                "assetid": f"local-{index}",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+            },
+            PricingStrategy.ROBUST_MEDIAN,
+            900,
+            buyer_price_minor,
+            strategy_profile_id=profile.id,
+        )
+        database.update_listing(
+            listing_id,
+            state=ListingState.PENDING_CONFIRMATION,
+            stage=1,
+            strategy=PricingStrategy.ROBUST_MEDIAN,
+            listing_requested_at=requested_at.isoformat(),
+        )
+        record = database.listing(listing_id)
+        assert record is not None
+        submission_id = database.create_listing_submission(record, requested_at)
+        database.finish_listing_submission(
+            submission_id,
+            steam_listing_id=f"ignored-local-listing-{index}",
+        )
+        listing_ids.append(listing_id)
+    return listing_ids
 
 
 def test_inventory_upsert_and_listing_plan(tmp_path: Path) -> None:
@@ -349,7 +390,7 @@ def test_strategy_profiles_can_be_created_and_made_default(tmp_path: Path) -> No
 
 def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
-    imported = database.import_active_listings(
+    imported = database.sync_active_listing_groups(
         [
             {
                 "listing_id": "9001",
@@ -366,59 +407,144 @@ def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     assert listing.state is ListingState.ACTIVE
     assert listing.steam_listing_id == "9001"
     assert listing.strategy_profile_id == database.strategy_profile().id
+    assert listing.sync_status is ListingSyncStatus.EXTERNAL
 
 
-def test_active_import_reconciles_listing_id_asset_conflict(tmp_path: Path) -> None:
+def test_group_quantity_match_ignores_listing_asset_and_date(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
-    first = {
-        "assetid": "100",
-        "appid": 730,
-        "contextid": "2",
-        "market_hash_name": "First Item",
-    }
-    second = {
-        "assetid": "101",
-        "appid": 730,
-        "contextid": "2",
-        "market_hash_name": "Second Item",
-    }
-    first_id = database.create_listing(
-        first, PricingStrategy.TREND, 100, 115
-    )
-    second_id = database.create_listing(
-        second, PricingStrategy.TREND, 100, 115
-    )
-    database.update_listing(
-        first_id,
-        state=ListingState.ACTIVE,
-        steam_listing_id="listing-9001",
-    )
-    database.update_listing(
-        second_id,
-        state=ListingState.ACTIVE,
-        steam_listing_id="listing-9002",
-    )
-
-    imported = database.import_active_listings(
+    listing_ids = create_submitted_group(database, 2)
+    database.sync_active_listing_groups(
         [
             {
-                **second,
-                "listing_id": "listing-9001",
-                "buyer_price_minor": 115,
-                "listed_at": "2026-07-28T00:00:00+00:00",
+                "listing_id": f"unrelated-{index}",
+                "assetid": f"remote-{index}",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+                "buyer_price_minor": 1035,
+                "listed_at": f"2020-01-0{index + 1}T00:00:00+00:00",
             }
+            for index in range(2)
         ]
     )
 
-    assert imported == 0
-    stale = database.listing(first_id)
-    current = database.listing(second_id)
-    assert stale is not None
-    assert stale.state is ListingState.CANCELLED
-    assert stale.steam_listing_id is None
-    assert current is not None
-    assert current.state is ListingState.ACTIVE
-    assert current.steam_listing_id == "listing-9001"
+    restored = [database.listing(listing_id) for listing_id in listing_ids]
+    assert all(record is not None for record in restored)
+    assert all(record.state is ListingState.ACTIVE for record in restored if record)
+    assert all(
+        record.sync_status is ListingSyncStatus.MATCHED
+        for record in restored
+        if record
+    )
+    assert all(
+        record.strategy is PricingStrategy.ROBUST_MEDIAN and record.stage == 1
+        for record in restored
+        if record
+    )
+    assert all(
+        record.active_since == datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+        for record in restored
+        if record
+    )
+
+
+@pytest.mark.parametrize(
+    ("local_count", "steam_count", "matched", "pending", "external"),
+    [(2, 3, 2, 0, 1), (3, 2, 2, 1, 0)],
+)
+def test_group_quantity_mismatch_statuses(
+    tmp_path: Path,
+    local_count: int,
+    steam_count: int,
+    matched: int,
+    pending: int,
+    external: int,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    create_submitted_group(database, local_count)
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": f"remote-{index}",
+                "assetid": f"ignored-{index}",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+                "buyer_price_minor": 1035,
+            }
+            for index in range(steam_count)
+        ]
+    )
+
+    records = [
+        record
+        for record in database.listings()
+        if record.market_hash_name == "Grouped Item"
+        and record.state
+        in {ListingState.ACTIVE, ListingState.PENDING_CONFIRMATION}
+    ]
+    assert (
+        sum(record.sync_status is ListingSyncStatus.MATCHED for record in records)
+        == matched
+    )
+    assert (
+        sum(
+            record.sync_status is ListingSyncStatus.PENDING_MATCH
+            for record in records
+        )
+        == pending
+    )
+    assert (
+        sum(record.sync_status is ListingSyncStatus.EXTERNAL for record in records)
+        == external
+    )
+    assert all(
+        record.error_message and "数量不一致" in record.error_message
+        for record in records
+    )
+
+
+@pytest.mark.parametrize(
+    "remote_override",
+    [
+        {"contextid": "16"},
+        {"buyer_price_minor": 1036},
+        {"market_hash_name": "Different Item"},
+        {"appid": 440},
+    ],
+)
+def test_group_match_requires_all_four_key_fields(
+    tmp_path: Path, remote_override: dict[str, object]
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    create_submitted_group(database, 1)
+    remote = {
+        "listing_id": "ignored",
+        "assetid": "same-or-different-does-not-matter",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "Grouped Item",
+        "buyer_price_minor": 1035,
+    }
+    remote.update(remote_override)
+
+    database.sync_active_listing_groups([remote])
+
+    open_records = database.listings(
+        [ListingState.ACTIVE, ListingState.PENDING_CONFIRMATION]
+    )
+    assert all(
+        record.sync_status is not ListingSyncStatus.MATCHED
+        for record in open_records
+    )
+    assert sum(
+        record.sync_status is ListingSyncStatus.PENDING_MATCH
+        for record in open_records
+    ) == 1
+    assert sum(
+        record.sync_status is ListingSyncStatus.EXTERNAL
+        for record in open_records
+    ) == 1
 
 
 def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
@@ -463,14 +589,25 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
         seller_price_minor=900,
         buyer_price_minor=1035,
     )
-    assert database.reconcile_pending_reprices() == 1
-    reference = database.latest_active_age_reprice(730, "Test Item")
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": "irrelevant-new-listing",
+                "assetid": "different-asset",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Test Item",
+                "buyer_price_minor": 1035,
+            }
+        ]
+    )
+    reference = database.latest_active_age_reprice(730, "2", "Test Item")
     assert reference is not None
     assert reference.new_buyer_price_minor == 1035
     assert reference.status == "confirmed"
 
     database.clear_runtime_cache()
-    database.import_active_listings(
+    database.sync_active_listing_groups(
         [
             {
                 "listing_id": "new-listing",
@@ -486,9 +623,7 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
     restored = database.listings()[0]
     assert restored.stage == 1
     assert restored.strategy is PricingStrategy.ROBUST_MEDIAN
-    assert restored.next_action_at == datetime(
-        2026, 7, 4, tzinfo=UTC
-    )
+    assert restored.sync_status is ListingSyncStatus.MATCHED
 
 
 def test_submission_metadata_survives_pending_cache_cleanup(tmp_path: Path) -> None:
@@ -529,7 +664,7 @@ def test_submission_metadata_survives_pending_cache_cleanup(tmp_path: Path) -> N
 
     database.clear_runtime_cache(preserve_active_listings=True)
     assert database.listing(listing_id) is None
-    database.import_active_listings(
+    database.sync_active_listing_groups(
         [
             {
                 "listing_id": "new-listing",
@@ -588,7 +723,8 @@ def test_existing_active_listing_is_corrected_from_reprice_history(
         buyer_price_minor=1035,
     )
 
-    database.import_active_listings(
+    history = database.reprice_history()[0]
+    database.sync_active_listing_groups(
         [
             {
                 **asset,
@@ -603,4 +739,5 @@ def test_existing_active_listing_is_corrected_from_reprice_history(
     assert restored is not None
     assert restored.stage == 1
     assert restored.strategy is PricingStrategy.ROBUST_MEDIAN
-    assert restored.next_action_at == datetime(2026, 7, 28, tzinfo=UTC)
+    assert restored.active_since == history.submitted_at
+    assert restored.next_action_at == history.submitted_at + timedelta(hours=72)

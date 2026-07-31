@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,9 +22,6 @@ from app.full_run import exit_code_for
 from app.services.listing_manager import (
     ListingManager,
     _as_points,
-    _consume_recent_sale,
-    _is_same_listing_asset,
-    _listing_action_reference_time,
 )
 
 
@@ -159,173 +156,40 @@ def test_history_keeps_buyer_facing_market_price() -> None:
     assert points[0].price_minor == 1150
 
 
-def test_next_action_reference_uses_steam_listing_time() -> None:
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "2026-07-25T04:00:00+00:00"},
-        None,
-        now,
-        display_timezone=UTC,
-    )
-    assert reference == datetime(2026, 7, 25, 4, tzinfo=UTC)
-
-
-def test_next_action_reference_parses_steam_chinese_date() -> None:
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "7 月 25 日"}, None, now, display_timezone=UTC
-    )
-    assert reference == datetime(2026, 7, 25, tzinfo=UTC)
-
-
-def test_same_steam_date_prefers_precise_request_time() -> None:
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "7 月 25 日"},
-        None,
-        now,
-        listing_requested_at=requested_at,
-        display_timezone=UTC,
-    )
-    assert reference == requested_at
-
-
-def test_later_steam_date_replaces_request_time_with_midnight() -> None:
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "7 月 26 日"},
-        None,
-        now,
-        listing_requested_at=requested_at,
-        display_timezone=UTC,
-    )
-    assert reference == datetime(2026, 7, 26, tzinfo=UTC)
-
-
-def test_steam_date_midnight_uses_display_timezone() -> None:
-    display_timezone = timezone(timedelta(hours=8))
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    requested_at = datetime(2026, 7, 25, 6, 25, 26, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "7 月 26 日"},
-        None,
-        now,
-        listing_requested_at=requested_at,
-        display_timezone=display_timezone,
-    )
-    assert reference == datetime(2026, 7, 26, tzinfo=display_timezone)
-
-
-def test_name_only_match_forces_steam_time() -> None:
-    now = datetime(2026, 7, 27, 11, 10, tzinfo=UTC)
-    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
-    reference = _listing_action_reference_time(
-        {"listed_at": "7 月 25 日"},
-        None,
-        now,
-        listing_requested_at=requested_at,
-        force_steam_time=True,
-        display_timezone=UTC,
-    )
-    assert reference == datetime(2026, 7, 25, tzinfo=UTC)
-
-
-def test_pending_listing_can_match_exact_asset_without_listing_id() -> None:
-    remote = {
-        "listing_id": "9001",
-        "assetid": "52940911278",
-        "appid": 730,
-        "contextid": "2",
-        "market_hash_name": "Same Name",
-    }
-    assert _is_same_listing_asset(remote, "52940911278", 730, "2") is True
-    assert _is_same_listing_asset(remote, "52940911278", 730, "16") is False
-    assert _is_same_listing_asset(remote, "different-asset", 730, "2") is False
-
-
-def test_one_recent_sale_resolves_only_one_unmatched_pending_listing() -> None:
-    now = datetime(2026, 7, 28, 2, 2, tzinfo=UTC)
-    records = [
-        ListingRecord(
-            id=listing_id,
-            assetid=f"asset-{listing_id}",
-            appid=730,
-            contextid="2",
-            market_hash_name="Tec-9 | Rebel (Well-Worn)",
-            state=ListingState.PENDING_CONFIRMATION,
-            strategy=PricingStrategy.TREND,
-            stage=0,
-            seller_price_minor=676,
-            buyer_price_minor=876,
-            listing_requested_at=now,
-            created_at=now,
-            updated_at=now,
-        )
-        for listing_id in (1, 2)
+def test_sync_states_delegates_group_quantity_reconciliation() -> None:
+    remote = [
+        {
+            "listing_id": "ignored",
+            "assetid": "ignored",
+            "appid": 730,
+            "contextid": "2",
+            "market_hash_name": "Grouped Item",
+            "buyer_price_minor": 1035,
+            "listed_at": "2020-01-01T00:00:00+00:00",
+        }
     ]
 
     class Store:
         def __init__(self):
-            self.updates = []
-            self.sold_histories = []
-            self.audits = []
+            self.received = None
 
-        def import_active_listings(self, *_args):
-            return 0
-
-        def reconcile_pending_reprices(self):
-            return 0
-
-        def listings(self, _states):
-            return records
-
-        def update_listing(self, listing_id, **fields):
-            self.updates.append((listing_id, fields))
-
-        def mark_reprice_history_sold(self, listing_id):
-            self.sold_histories.append(listing_id)
-
-        def audit(self, *args):
-            self.audits.append(args)
+        def sync_active_listing_groups(self, items, fee_options):
+            self.received = (items, fee_options)
+            return 3
 
     class Market:
         async def active_listings(self):
-            return []
+            return remote
 
         async def recent_sales(self):
-            return [
-                {
-                    "market_hash_name": "Tec-9 | Rebel (Well-Worn)",
-                    "sold_at": "7 月 28 日",
-                }
-            ]
+            raise AssertionError("分组同步不应读取成交日期")
 
     store = Store()
     manager = ListingManager(store=store, market=Market())
     result = asyncio.run(manager.sync_states())
 
-    assert result.listings_updated == 1
-    assert store.updates == [(1, {"state": ListingState.SOLD, "error_message": None})]
-    assert store.sold_histories == [1]
-    assert len(store.audits) == 1
-
-
-def test_pending_listing_does_not_consume_sale_from_earlier_date() -> None:
-    sales = [
-        (
-            "Tec-9 | Rebel (Well-Worn)",
-            datetime(2026, 7, 27, tzinfo=UTC),
-        )
-    ]
-    consumed = _consume_recent_sale(
-        sales,
-        "Tec-9 | Rebel (Well-Worn)",
-        requested_at=datetime(2026, 7, 28, 2, 2, tzinfo=UTC),
-    )
-    assert consumed is False
-    assert len(sales) == 1
+    assert result.listings_updated == 3
+    assert store.received == (remote, {})
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:

@@ -322,13 +322,28 @@ function renderListings(items, blacklist) {
   const pendingConfirmations = items.filter(
     (item) => item.state === "pending_confirmation"
   );
-  const activeListings = items.filter((item) => item.state === "active");
+  const activeListings = items.filter((item) =>
+    ["active", "pending_confirmation"].includes(item.state)
+    && ["matched", "external", "pending_match"].includes(item.sync_status)
+  );
   groupedActiveListings = Array.from(activeListings.reduce((groups, item) => {
-    const key = `${item.appid}\u0000${item.market_hash_name}`;
+    const key = [
+      item.appid,
+      item.contextid,
+      item.market_hash_name,
+      item.buyer_price_minor,
+    ].join("\u0000");
     const current = groups.get(key);
     if (current) {
-      current.listingIds.push(item.id);
-      current.strategies.add(item.strategy);
+      if (item.sync_status === "matched") current.listingIds.push(item.id);
+      if (item.sync_status !== "external") {
+        current.strategies.add(`${item.strategy}（阶段 ${item.stage}）`);
+        current.localQuantity += 1;
+      }
+      if (item.sync_status !== "pending_match") current.steamQuantity += 1;
+      if (item.sync_status === "matched") current.matchedQuantity += 1;
+      if (item.sync_status === "pending_match") current.pendingQuantity += 1;
+      if (item.sync_status === "external") current.externalQuantity += 1;
       current.buyerPrices.push(item.buyer_price_minor);
       current.steamListedTimes.push(item.steam_listed_at);
       current.nextActionTimes.push(item.next_action_at);
@@ -336,14 +351,26 @@ function renderListings(items, blacklist) {
     } else {
       groups.set(key, {
         appid: item.appid,
+        contextid: item.contextid,
         market_hash_name: item.market_hash_name,
-        listingIds: [item.id],
-        strategies: new Set([item.strategy]),
+        listingIds: item.sync_status === "matched" ? [item.id] : [],
+        strategies: new Set(
+          item.sync_status === "external"
+            ? []
+            : [`${item.strategy}（阶段 ${item.stage}）`]
+        ),
+        localQuantity: item.sync_status === "external" ? 0 : 1,
+        steamQuantity: item.sync_status === "pending_match" ? 0 : 1,
+        matchedQuantity: item.sync_status === "matched" ? 1 : 0,
+        pendingQuantity: item.sync_status === "pending_match" ? 1 : 0,
+        externalQuantity: item.sync_status === "external" ? 1 : 0,
         buyerPrices: [item.buyer_price_minor],
         steamListedTimes: [item.steam_listed_at],
         nextActionTimes: [item.next_action_at],
         errors: new Set(item.error_message ? [item.error_message] : []),
-        blacklisted: blacklistKeys.has(key),
+        blacklisted: blacklistKeys.has(
+          `${item.appid}\u0000${item.market_hash_name}`
+        ),
       });
     }
     return groups;
@@ -395,13 +422,25 @@ function renderListings(items, blacklist) {
       </tr>`).join("")
     : '<tr><td colspan="6">没有价格异常任务</td></tr>';
   $("#active-listings-body").innerHTML = groupedActiveListings.length
-    ? groupedActiveListings.map((item, index) => `<tr>
+    ? groupedActiveListings.map((item, index) => {
+      const quantityMismatch = item.localQuantity !== item.steamQuantity;
+      const syncLabel = quantityMismatch ? "数量不一致" : "已匹配";
+      const quantityDetail = [
+        `本地 ${item.localQuantity}`,
+        `Steam ${item.steamQuantity}`,
+        `已匹配 ${item.matchedQuantity}`,
+        `待匹配 ${item.pendingQuantity}`,
+        `外部 ${item.externalQuantity}`,
+      ].join(" / ");
+      return `<tr>
         <td><input class="active-select" type="checkbox" data-group-index="${index}"
-          ${item.blacklisted ? "disabled" : ""}
+          ${item.blacklisted || !item.listingIds.length ? "disabled" : ""}
           aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${escapeHtml(item.market_hash_name)}</td>
-        <td>${item.listingIds.length}</td>
-        <td>${item.strategies.size === 1 ? [...item.strategies][0] : "多个策略"}</td>
+        <td class="${quantityMismatch ? "error-text" : ""}">${syncLabel}</td>
+        <td>${quantityDetail}</td>
+        <td>${item.strategies.size === 1 ? [...item.strategies][0]
+          : item.strategies.size ? "多个策略/阶段" : "外部挂单"}</td>
         <td>${moneyRange(item.buyerPrices)}</td>
         <td>${displaySteamTime(earliestTime(item.steamListedTimes))}</td>
         <td>${earliestTime(item.nextActionTimes)
@@ -411,8 +450,9 @@ function renderListings(items, blacklist) {
         <td><button class="secondary active-blacklist-toggle" type="button" data-group-index="${index}">
           ${item.blacklisted ? "移出黑名单" : "加入黑名单"}
         </button></td>
-      </tr>`).join("")
-    : '<tr><td colspan="9">当前没有已同步的在售挂单</td></tr>';
+      </tr>`;
+    }).join("")
+    : '<tr><td colspan="10">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }
