@@ -189,6 +189,52 @@ def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     assert listing.strategy_profile_id == database.strategy_profile().id
 
 
+def test_manual_relisting_reuses_paused_asset_record(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = InventoryAsset(
+        appid=730,
+        contextid="2",
+        assetid="100",
+        classid="200",
+        name="测试",
+        market_hash_name="Test Item",
+        marketable=True,
+        tradable=True,
+    )
+    database.replace_inventory([asset])
+    listing_id = database.create_listing(
+        database.inventory(marketable_only=True)[0],
+        PricingStrategy.ROBUST_MEDIAN,
+        1000,
+        1150,
+    )
+    database.update_listing(
+        listing_id,
+        state=ListingState.PAUSED,
+        steam_listing_id=None,
+    )
+
+    imported = database.import_active_listings(
+        [
+            {
+                "listing_id": "9002",
+                "assetid": "100",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Test Item",
+                "buyer_price_minor": 1150,
+                "listed_at": "2026-07-31T00:00:00+00:00",
+            }
+        ]
+    )
+
+    assert imported == 0
+    listing = database.listing(listing_id)
+    assert listing is not None
+    assert listing.state is ListingState.ACTIVE
+    assert listing.steam_listing_id == "9002"
+
+
 def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     asset = InventoryAsset(

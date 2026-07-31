@@ -705,7 +705,13 @@ class ListingManager:
                     if record.market_hash_name in recent_sales
                     else ListingState.PAUSED
                 )
-                self.store.update_listing(record.id, state=state)
+                self.store.update_listing(
+                    record.id,
+                    state=state,
+                    steam_listing_id=None,
+                    active_since=None,
+                    next_action_at=None,
+                )
                 updated += 1
         return SyncResult(listings_updated=updated)
 

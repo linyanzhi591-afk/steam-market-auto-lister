@@ -648,6 +648,24 @@ class Database:
                     (steam_listing_id,),
                 ).fetchone()
                 remote_assetid = str(item.get("assetid") or "")
+                if existing is None and remote_assetid:
+                    existing = db.execute(
+                        """
+                        SELECT id FROM listings
+                        WHERE assetid = ?
+                          AND state IN (?, ?, ?, ?, ?)
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (
+                            remote_assetid,
+                            ListingState.PLANNED.value,
+                            ListingState.PRICE_REVIEW.value,
+                            ListingState.PENDING_CONFIRMATION.value,
+                            ListingState.ACTIVE.value,
+                            ListingState.PAUSED.value,
+                        ),
+                    ).fetchone()
                 assetid = remote_assetid or f"external:{steam_listing_id}"
                 appid = int(item.get("appid") or 0)
                 remote_contextid = str(item.get("contextid") or "")
@@ -725,7 +743,10 @@ class Database:
                             market_hash_name = CASE WHEN ? != '' THEN ? ELSE market_hash_name END,
                             seller_price_minor = ?,
                             buyer_price_minor = ?,
+                            steam_listing_id = ?,
                             steam_listed_at = CASE WHEN ? != '' THEN ? ELSE steam_listed_at END,
+                            active_since = COALESCE(active_since, ?),
+                            next_action_at = ?,
                             error_message = NULL,
                             updated_at = ?
                         WHERE id = ?
@@ -742,8 +763,11 @@ class Database:
                             remote_name,
                             seller_price,
                             max(buyer_price, seller_price),
+                            steam_listing_id,
                             str(item.get("listed_at") or ""),
                             str(item.get("listed_at") or ""),
+                            listed_datetime.isoformat(),
+                            next_action.isoformat(),
                             utc_now(),
                             existing["id"],
                         ),
