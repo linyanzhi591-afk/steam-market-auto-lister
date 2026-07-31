@@ -51,7 +51,7 @@ class PriceDecision(BaseModel):
     price_minor: int = Field(ge=0)
     confidence: str
     reason: str
-    seller_receives_minor: int = Field(default=0, ge=0)
+    seller_receives_minor: int | None = Field(default=None, ge=0)
     buyer_pays_minor: int = Field(default=0, ge=0)
 
 
@@ -208,6 +208,8 @@ class StrategyStage(BaseModel):
     forecast_hours: int = Field(default=6, ge=0, le=48)
     recent_floor_percent: float = Field(default=90, ge=0, le=200)
     long_floor_percent: float = Field(default=85, ge=0, le=200)
+    trend_robust_floor_percent: float = Field(default=90, ge=0, le=100)
+    fast_sell_floor_percent: float = Field(default=85, ge=0, le=100)
     maximum_drop_percent: float | None = Field(default=None, ge=0, le=100)
     minimum_price_points: int = Field(default=24, ge=1, le=1000)
     duration_hours: int = Field(default=24, ge=1, le=720)

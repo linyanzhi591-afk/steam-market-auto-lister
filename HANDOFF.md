@@ -7,15 +7,25 @@
 - 挂单阶段现在按真实最低可成交价设置价格下限，并在单次计算中复用同一份费用配置。
 - 重新计价时，四种计价策略及其百分比、固定金额、绝对底价和中位价底价调整后的最终买家支付价，均不会高于该饰品下架前的在售价。
 - 首次上架没有下架前在售价，不应用上述价格上限。
+- 异常点清洗已改为小样本 MAD 与 IQR 组合；孤立时间分桶会参考其他历史数据，单点成交量权重最多按 1000 成交量计算。
+- 历史窗口按当前 UTC 时间精确过滤；拒绝超过 5 分钟的未来数据，窗口外数据不再多保留一天。
+- 近期窗口不再为凑足样本扩展到 30 天，而是按实际样本数降低近期权重。
+- 稳健策略在长期软下限与近期硬上限冲突时优先近期上限。
+- 趋势策略默认最低可到稳健价的 90%；快速出售默认以稳健价的 85% 为安全下限。
+- 市场压价使用“不高于目标”的手续费取整，底价使用“不低于目标”的手续费取整。
+- 价格底线高于下架前售价或可信市场上限时会明确报错，阻止自动下架重挂。
+- 策略计算只返回买家参考价；卖家到账在挂单阶段统一换算，未换算时为 `None`。
 
 ## 验证
 
-- `.venv\Scripts\python.exe -m pytest tests/test_pricing.py tests/test_listing_manager.py -q`
-  - 结果：25 passed
-- `.venv\Scripts\python.exe -m ruff check app/services/pricing.py app/services/listing_manager.py tests/test_pricing.py tests/test_listing_manager.py`
+- `.venv\Scripts\python.exe -m pytest -q`
+  - 结果：56 passed
+- `.venv\Scripts\python.exe -m ruff check app/core/models.py app/services/pricing.py app/services/listing_manager.py tests/test_pricing.py tests/test_listing_manager.py`
   - 结果：All checks passed
 - `git diff --check`
   - 结果：通过
+- 对默认、CNY、INR 手续费配置验证了向上/向下取整性质。
+- 对当前最低价 `4～500` 穷举，市场跟随没有出现最终价格等于或高于当前最低价。
 
 ## 后续
 

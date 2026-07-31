@@ -137,18 +137,75 @@ def test_reprice_never_exceeds_price_before_delisting(
         pricing_source=strategy,
         adjustment_percent=50,
         adjustment_fixed_minor=500,
-        absolute_floor_minor=1500,
-        median_floor_percent=150,
         duration_hours=24,
     )
     _seller_price, buyer_price = manager.stage_price(
         stage,
         points,
-        minimum_buyer_price_minor=1400,
+        minimum_buyer_price_minor=1,
         current_lowest_minor=1600,
         current_buyer_price_minor=1000,
     )
     assert buyer_price <= 1000
+
+
+def test_reprice_rejects_conflicting_floor_and_previous_price() -> None:
+    manager = ListingManager(store=object(), market=object())
+    points = [
+        PricePoint(timestamp=datetime.now(UTC), price_minor=1200, volume=10)
+    ]
+    stage = StrategyStage(
+        name="冲突价格",
+        pricing_source=PricingStrategy.ROBUST_MEDIAN,
+        absolute_floor_minor=1500,
+        duration_hours=24,
+    )
+    with pytest.raises(ValueError, match="价格上下限冲突"):
+        manager.stage_price(
+            stage,
+            points,
+            minimum_buyer_price_minor=1,
+            current_buyer_price_minor=1000,
+        )
+
+
+def test_market_follow_uses_achievable_price_below_market() -> None:
+    manager = ListingManager(store=object(), market=object())
+    points = [
+        PricePoint(timestamp=datetime.now(UTC), price_minor=44, volume=10)
+    ]
+    stage = StrategyStage(
+        name="市场跟随",
+        pricing_source=PricingStrategy.MARKET_FOLLOW,
+        duration_hours=24,
+    )
+    _seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_buyer_price_minor=1,
+        current_lowest_minor=45,
+    )
+    assert buyer_price < 45
+
+
+def test_fast_sell_does_not_follow_abnormally_low_market_listing() -> None:
+    manager = ListingManager(store=object(), market=object())
+    points = [
+        PricePoint(timestamp=datetime.now(UTC), price_minor=1000, volume=10)
+        for _ in range(10)
+    ]
+    stage = StrategyStage(
+        name="快速出售",
+        pricing_source=PricingStrategy.FAST_SELL,
+        duration_hours=24,
+    )
+    _seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_buyer_price_minor=1,
+        current_lowest_minor=100,
+    )
+    assert buyer_price >= 850
 
 
 def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:

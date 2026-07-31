@@ -23,6 +23,8 @@ from app.core.models import (
 from app.services.pricing import (
     buyer_pays_for_seller_receive,
     calculate_price,
+    listing_price_at_least,
+    listing_price_at_most,
     seller_receive_for_buyer_pay,
 )
 from app.services.steam_market import SteamMarketService, steam_market_service
@@ -107,6 +109,8 @@ class ListingManager:
             "forecast_hours": stage.forecast_hours,
             "recent_floor_percent": stage.recent_floor_percent,
             "long_floor_percent": stage.long_floor_percent,
+            "trend_robust_floor_percent": stage.trend_robust_floor_percent,
+            "fast_sell_floor_percent": stage.fast_sell_floor_percent,
             "minimum_price_points": stage.minimum_price_points,
         }
 
@@ -125,7 +129,6 @@ class ListingManager:
             stage.pricing_source,
             points,
             current_lowest_minor=current_lowest_minor,
-            fee_options=fee_options,
             pricing_options=pricing_options,
         )
         median_decision = calculate_price(
@@ -141,46 +144,70 @@ class ListingManager:
             median_decision.price_minor * stage.median_floor_percent / 100
         )
         minimum_buyer_pay = buyer_pays_for_seller_receive(1, **fee_options)
-        buyer_target = max(
+        hard_floor = max(
             minimum_buyer_pay,
-            adjusted,
             minimum_buyer_price_minor,
             stage.absolute_floor_minor,
+        )
+        soft_floor = max(
             median_floor,
+            hard_floor,
         )
         if (
             current_buyer_price_minor is not None
             and stage.maximum_drop_percent is not None
         ):
-            buyer_target = max(
-                buyer_target,
+            soft_floor = max(
+                soft_floor,
                 round(
                     current_buyer_price_minor
                     * (1 - stage.maximum_drop_percent / 100)
                 ),
             )
-        if current_buyer_price_minor is not None:
-            buyer_target = min(buyer_target, current_buyer_price_minor)
-        seller_price = seller_receive_for_buyer_pay(
-            buyer_target, **fee_options
-        )
-        buyer_price = buyer_pays_for_seller_receive(
-            seller_price, **fee_options
-        )
-        while buyer_price < buyer_target:
-            seller_price += 1
-            buyer_price = buyer_pays_for_seller_receive(
-                seller_price, **fee_options
+        ceilings = [
+            ceiling
+            for ceiling in (
+                current_buyer_price_minor,
+                (
+                    current_lowest_minor - 1
+                    if (
+                        current_lowest_minor is not None
+                        and current_lowest_minor > 2
+                        and decision.price_minor <= current_lowest_minor - 1
+                        and stage.pricing_source
+                        in {
+                            PricingStrategy.MARKET_FOLLOW,
+                            PricingStrategy.FAST_SELL,
+                        }
+                    )
+                    else None
+                ),
             )
-        if (
-            current_buyer_price_minor is not None
-            and buyer_price > current_buyer_price_minor
-        ):
-            seller_price = seller_receive_for_buyer_pay(
-                current_buyer_price_minor, **fee_options
+            if ceiling is not None
+        ]
+        hard_ceiling = min(ceilings) if ceilings else None
+        if hard_ceiling is not None and soft_floor > hard_ceiling:
+            raise ValueError(
+                "价格上下限冲突：最低允许价格"
+                f" {soft_floor} 高于最高允许价格 {hard_ceiling}"
             )
-            buyer_price = buyer_pays_for_seller_receive(
-                seller_price, **fee_options
+        buyer_target = max(adjusted, soft_floor)
+        if hard_ceiling is not None:
+            buyer_target = min(buyer_target, hard_ceiling)
+            seller_price, buyer_price = listing_price_at_most(
+                buyer_target, **fee_options
+            )
+            if buyer_price < soft_floor:
+                seller_price, buyer_price = listing_price_at_least(
+                    soft_floor, **fee_options
+                )
+                if buyer_price > hard_ceiling:
+                    raise ValueError(
+                        "手续费离散价格无法同时满足最低价和最高价"
+                    )
+        else:
+            seller_price, buyer_price = listing_price_at_least(
+                buyer_target, **fee_options
             )
         return seller_price, buyer_price
 
@@ -619,7 +646,7 @@ class ListingManager:
                     error_message=None,
                 )
                 resubmit_ids.append(record.id)
-            except (PermissionError, RuntimeError) as exc:
+            except (PermissionError, RuntimeError, ValueError) as exc:
                 self.store.update_listing(record.id, error_message=str(exc))
                 self.store.fail_reprice_history(record.id, str(exc))
         if resubmit_ids:
