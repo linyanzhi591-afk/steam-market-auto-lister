@@ -159,6 +159,8 @@ class ListingManager:
                     * (1 - stage.maximum_drop_percent / 100)
                 ),
             )
+        if current_buyer_price_minor is not None:
+            buyer_target = min(buyer_target, current_buyer_price_minor)
         seller_price = seller_receive_for_buyer_pay(
             buyer_target, **fee_options
         )
@@ -167,6 +169,16 @@ class ListingManager:
         )
         while buyer_price < buyer_target:
             seller_price += 1
+            buyer_price = buyer_pays_for_seller_receive(
+                seller_price, **fee_options
+            )
+        if (
+            current_buyer_price_minor is not None
+            and buyer_price > current_buyer_price_minor
+        ):
+            seller_price = seller_receive_for_buyer_pay(
+                current_buyer_price_minor, **fee_options
+            )
             buyer_price = buyer_pays_for_seller_receive(
                 seller_price, **fee_options
             )

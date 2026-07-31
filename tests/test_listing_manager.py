@@ -118,6 +118,39 @@ def test_stage_maximum_drop_limits_active_reprice() -> None:
     assert 700 <= buyer_price <= 701
 
 
+@pytest.mark.parametrize("strategy", list(PricingStrategy))
+def test_reprice_never_exceeds_price_before_delisting(
+    strategy: PricingStrategy,
+) -> None:
+    manager = ListingManager(store=object(), market=object())
+    now = datetime.now(UTC)
+    points = [
+        PricePoint(
+            timestamp=now,
+            price_minor=1200,
+            volume=10,
+        )
+        for _ in range(7)
+    ]
+    stage = StrategyStage(
+        name="重新计价",
+        pricing_source=strategy,
+        adjustment_percent=50,
+        adjustment_fixed_minor=500,
+        absolute_floor_minor=1500,
+        median_floor_percent=150,
+        duration_hours=24,
+    )
+    _seller_price, buyer_price = manager.stage_price(
+        stage,
+        points,
+        minimum_buyer_price_minor=1400,
+        current_lowest_minor=1600,
+        current_buyer_price_minor=1000,
+    )
+    assert buyer_price <= 1000
+
+
 def test_inr_fee_configuration_treats_two_rupees_as_total_minimum() -> None:
     class Session:
         def status(self) -> SessionStatus:
