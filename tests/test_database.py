@@ -501,6 +501,80 @@ def test_group_sync_reuses_open_listing_when_submission_reference_is_stale(
     assert submission["listing_record_id"] == replacement_id
 
 
+def test_group_sync_uses_latest_submission_when_asset_has_stale_duplicates(
+    tmp_path: Path,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    profile = database.strategy_profile()
+    asset = {
+        "assetid": "duplicate-asset",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "Duplicate Item",
+    }
+    requested_at = datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    old_listing_id = database.create_listing(
+        asset,
+        PricingStrategy.ROBUST_MEDIAN,
+        400,
+        460,
+        strategy_profile_id=profile.id,
+    )
+    database.update_listing(
+        old_listing_id,
+        state=ListingState.PENDING_CONFIRMATION,
+        listing_requested_at=requested_at.isoformat(),
+    )
+    old_record = database.listing(old_listing_id)
+    assert old_record is not None
+    old_submission_id = database.create_listing_submission(old_record, requested_at)
+    database.finish_listing_submission(
+        old_submission_id, steam_listing_id="old-listing"
+    )
+    database.update_listing(old_listing_id, state=ListingState.CANCELLED)
+
+    new_listing_id = database.create_listing(
+        asset,
+        PricingStrategy.ROBUST_MEDIAN,
+        500,
+        575,
+        strategy_profile_id=profile.id,
+    )
+    database.update_listing(
+        new_listing_id,
+        state=ListingState.PENDING_CONFIRMATION,
+        listing_requested_at=requested_at.isoformat(),
+    )
+    new_record = database.listing(new_listing_id)
+    assert new_record is not None
+    new_submission_id = database.create_listing_submission(new_record, requested_at)
+    database.finish_listing_submission(
+        new_submission_id, steam_listing_id="new-listing"
+    )
+    with database.connect() as db:
+        db.execute(
+            "DELETE FROM listings WHERE id IN (?, ?)",
+            (old_listing_id, new_listing_id),
+        )
+
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": "remote-listing",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Duplicate Item",
+                "buyer_price_minor": 575,
+            }
+        ]
+    )
+
+    restored = database.listings()
+    assert len(restored) == 1
+    assert restored[0].buyer_price_minor == 575
+    assert restored[0].sync_status is ListingSyncStatus.MATCHED
+
+
 @pytest.mark.parametrize(
     ("local_count", "steam_count", "matched", "pending", "external"),
     [(2, 3, 2, 0, 1), (3, 2, 2, 1, 0)],

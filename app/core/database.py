@@ -796,11 +796,22 @@ class Database:
                 identity = int(submission["listing_record_id"] or -submission["id"])
                 latest_submissions.setdefault(identity, submission)
 
+            latest_submissions_by_asset: dict[
+                tuple[int, str, str], sqlite3.Row
+            ] = {}
+            for submission in latest_submissions.values():
+                asset_key = (
+                    int(submission["appid"]),
+                    str(submission["contextid"]),
+                    str(submission["assetid"]),
+                )
+                latest_submissions_by_asset.setdefault(asset_key, submission)
+
             local_groups: dict[
                 tuple[int, str, str, int],
                 list[sqlite3.Row | dict[str, object]],
             ] = defaultdict(list)
-            for submission in latest_submissions.values():
+            for submission in latest_submissions_by_asset.values():
                 key = (
                     int(submission["appid"]),
                     str(submission["contextid"]),
@@ -818,13 +829,20 @@ class Database:
                 """
             ).fetchall()
             known_identities = set(latest_submissions)
+            known_assets = set(latest_submissions_by_asset)
             for history in history_rows:
                 identity = int(
                     history["listing_record_id"] or -history["id"]
                 )
-                if identity in known_identities:
+                asset_key = (
+                    int(history["appid"]),
+                    str(history["contextid"]),
+                    str(history["assetid"]),
+                )
+                if identity in known_identities or asset_key in known_assets:
                     continue
                 known_identities.add(identity)
+                known_assets.add(asset_key)
                 profile = (
                     profiles.get(history["strategy_profile_id"])
                     if history["strategy_profile_id"] is not None
