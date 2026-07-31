@@ -402,7 +402,7 @@ class Database:
                 db.execute(
                     """
                     DELETE FROM listings
-                WHERE state NOT IN ('active', 'price_review')
+                WHERE state != 'active'
                     """
                 )
             else:
@@ -740,6 +740,7 @@ class Database:
         self,
         remote: list[dict[str, object]],
         fee_options: dict[str, float | int] | None = None,
+        protected_pending_asset_keys: set[tuple[int, str, str]] | None = None,
     ) -> int:
         """仅按四字段分组键及组内数量同步 Steam 当前在售。"""
         from app.services.pricing import seller_receive_for_buyer_pay
@@ -939,7 +940,7 @@ class Database:
                         f"待匹配 {pending_count}，外部 {external_count}"
                     )
 
-                for index, metadata in enumerate(local_rows):
+                for index, metadata in enumerate(local_rows[:matched_count]):
                     is_matched = index < matched_count
                     remote_row = steam_rows[index] if is_matched else None
                     listing_record_id = metadata["listing_record_id"]
@@ -1196,6 +1197,16 @@ class Database:
                 listing_id = int(row["id"])
                 if listing_id in handled_listing_ids:
                     continue
+                asset_key = (
+                    int(row["appid"]),
+                    str(row["contextid"]),
+                    str(row["assetid"]),
+                )
+                if (
+                    row["state"] == ListingState.PENDING_CONFIRMATION.value
+                    and asset_key in (protected_pending_asset_keys or set())
+                ):
+                    continue
                 if (
                     row["price_source"] == "external"
                     or row["sync_status"] == ListingSyncStatus.EXTERNAL.value
@@ -1213,12 +1224,12 @@ class Database:
                     db.execute(
                         """
                         UPDATE listings
-                        SET state = 'pending_confirmation',
+                        SET state = 'cancelled',
                             steam_listing_id = NULL, steam_listed_at = NULL,
                             active_since = NULL, next_action_at = NULL,
                             sync_status = 'pending_match',
                             error_message =
-                                '待匹配：没有可用的本地提交分组记录',
+                                '本次运行未在 Steam 当前在售中匹配，已释放库存',
                             updated_at = ?
                         WHERE id = ?
                         """,

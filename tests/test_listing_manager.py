@@ -173,8 +173,14 @@ def test_sync_states_delegates_group_quantity_reconciliation() -> None:
         def __init__(self):
             self.received = None
 
-        def sync_active_listing_groups(self, items, fee_options):
-            self.received = (items, fee_options)
+        def sync_active_listing_groups(
+            self, items, fee_options, protected_pending_asset_keys
+        ):
+            self.received = (
+                items,
+                fee_options,
+                protected_pending_asset_keys,
+            )
             return 3
 
     class Market:
@@ -189,7 +195,7 @@ def test_sync_states_delegates_group_quantity_reconciliation() -> None:
     result = asyncio.run(manager.sync_states())
 
     assert result.listings_updated == 3
-    assert store.received == (remote, {})
+    assert store.received == (remote, {}, set())
 
 
 def test_fast_sell_uses_current_lowest_market_price() -> None:
@@ -378,9 +384,85 @@ def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
         "[1/4] 挂单状态同步完成：更新 3 条",
         "[2/4] 开始检查全部非黑名单超时挂单",
         "[2/4] 超时检查完成：处理 1 条挂单",
-        "[3/4] 非黑名单可出售 0 件，已有开放任务跳过 0 件，实际待生成计划 0 件",
+        "[3/4] 非黑名单可出售 0 件，本次等待手机确认跳过 0 件，调价临时下架跳过 0 件，实际待生成计划 0 件",
         "[3/4] 开始同步 0 件可出售库存的30天价格并生成计划",
         "[3/4] 没有可出售库存，跳过价格同步和计划生成",
         "[4/4] 开始执行 0 条待提交计划",
         "[4/4] 没有待提交计划，已跳过",
     ]
+
+
+def test_full_run_asset_selection_only_uses_runtime_exclusions() -> None:
+    assets = [
+        {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": assetid,
+            "market_hash_name": f"Item {assetid}",
+        }
+        for assetid in ("normal", "pending", "repricing")
+    ]
+    manager = ListingManager(store=object(), market=object())
+    manager._pending_confirmation_asset_keys = {
+        (730, "2", "pending"),
+        (730, "2", "repricing"),
+    }
+    manager._repricing_asset_keys = {(730, "2", "repricing")}
+
+    eligible, pending_count, repricing_count = manager.select_full_run_assets(assets)
+
+    assert [asset["assetid"] for asset in eligible] == ["normal"]
+    assert pending_count == 1
+    assert repricing_count == 1
+
+
+def test_full_run_does_not_submit_reprice_failure_as_new_listing() -> None:
+    now = datetime.now(UTC)
+    reprice_record = ListingRecord(
+        id=1,
+        assetid="repricing",
+        appid=730,
+        contextid="2",
+        market_hash_name="Repricing Item",
+        state=ListingState.FAILED,
+        strategy=PricingStrategy.ROBUST_MEDIAN,
+        stage=1,
+        seller_price_minor=100,
+        buyer_price_minor=115,
+        minimum_buyer_price_minor=3,
+        created_at=now,
+        updated_at=now,
+    )
+
+    class Store:
+        def settings(self) -> AppSettings:
+            return AppSettings()
+
+        def inventory(self, *, marketable_only: bool = False):
+            assert marketable_only is True
+            return []
+
+        def listings(self, states):
+            return [reprice_record] if ListingState.FAILED in states else []
+
+    class Market:
+        async def scan_inventory(self) -> SyncResult:
+            return SyncResult()
+
+    class Manager(ListingManager):
+        async def sync_states(self) -> SyncResult:
+            return SyncResult()
+
+        async def process_expired(
+            self, _currency: Currency, progress=None
+        ) -> int:
+            self._repricing_asset_keys.add(self.asset_key(reprice_record))
+            return 1
+
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("调价失败任务不应进入普通新上架路径")
+
+    result = asyncio.run(Manager(store=Store(), market=Market()).full_run())
+
+    assert result.expired_processed == 1
+    assert result.listings_submitted == 0

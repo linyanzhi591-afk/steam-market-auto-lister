@@ -58,6 +58,40 @@ class ListingManager:
         self.store = store or database
         self.market = market or steam_market_service
         self._full_run_lock = asyncio.Lock()
+        self._pending_confirmation_asset_keys: set[tuple[int, str, str]] = set()
+        self._repricing_asset_keys: set[tuple[int, str, str]] = set()
+
+    @staticmethod
+    def asset_key(record: ListingRecord | dict[str, object]) -> tuple[int, str, str]:
+        if isinstance(record, ListingRecord):
+            return record.appid, record.contextid, record.assetid
+        return (
+            int(record["appid"]),
+            str(record["contextid"]),
+            str(record["assetid"]),
+        )
+
+    def select_full_run_assets(
+        self, marketable_assets: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], int, int]:
+        repricing_keys = {
+            self.asset_key(asset)
+            for asset in marketable_assets
+            if self.asset_key(asset) in self._repricing_asset_keys
+        }
+        pending_keys = {
+            self.asset_key(asset)
+            for asset in marketable_assets
+            if self.asset_key(asset) in self._pending_confirmation_asset_keys
+            and self.asset_key(asset) not in repricing_keys
+        }
+        blocked_keys = repricing_keys | pending_keys
+        eligible = [
+            asset
+            for asset in marketable_assets
+            if self.asset_key(asset) not in blocked_keys
+        ]
+        return eligible, len(pending_keys), len(repricing_keys)
 
     def fee_options(self) -> dict[str, float | int]:
         session_service = getattr(self.market, "session", None)
@@ -451,6 +485,7 @@ class ListingManager:
                     steam_listing_id=str(steam_listing_id) if steam_listing_id else None,
                     error_message=None,
                 )
+                self._pending_confirmation_asset_keys.add(self.asset_key(record))
                 self.store.audit(
                     "listing.submit",
                     record.assetid,
@@ -677,6 +712,7 @@ class ListingManager:
                     reason="manual",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
+                self._repricing_asset_keys.add(self.asset_key(record))
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PLANNED,
@@ -706,7 +742,9 @@ class ListingManager:
         """按四字段分组数量同步，不按挂单、资产或日期匹配。"""
         remote = await self.market.active_listings()
         updated = self.store.sync_active_listing_groups(
-            remote, self.fee_options()
+            remote,
+            self.fee_options(),
+            self._pending_confirmation_asset_keys,
         )
         return SyncResult(listings_updated=updated)
 
@@ -714,7 +752,9 @@ class ListingManager:
         """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
         remote = await self.market.active_listings()
         updated = self.store.sync_active_listing_groups(
-            remote, self.fee_options()
+            remote,
+            self.fee_options(),
+            self._pending_confirmation_asset_keys,
         )
         return SyncResult(listings_updated=updated)
 
@@ -795,6 +835,7 @@ class ListingManager:
                     reason="age_timeout",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
+                self._repricing_asset_keys.add(self.asset_key(record))
                 if progress:
                     progress(
                         f"[2/4] 调价下架完成：{record.market_hash_name}，"
@@ -851,6 +892,8 @@ class ListingManager:
     ) -> FullRunResult:
         """执行一次完整同步、超时处理、计划生成和批量提交。"""
         result = FullRunResult()
+        self._pending_confirmation_asset_keys.clear()
+        self._repricing_asset_keys.clear()
         currency = self.store.settings().currency
         report = progress or (lambda _message: None)
         report("[1/4] 开始同步库存")
@@ -902,28 +945,9 @@ class ListingManager:
             report(f"[2/4] 超时处理失败：{exc}")
 
         marketable_assets = self.store.inventory(marketable_only=True)
-        open_asset_keys = {
-            (record.appid, record.contextid, record.assetid)
-            for record in self.store.listings(
-                [
-                    ListingState.PLANNED,
-                    ListingState.PRICE_REVIEW,
-                    ListingState.PENDING_CONFIRMATION,
-                    ListingState.ACTIVE,
-                ]
-            )
-        }
-        eligible_assets = [
-            asset
-            for asset in marketable_assets
-            if (
-                int(asset["appid"]),
-                str(asset["contextid"]),
-                str(asset["assetid"]),
-            )
-            not in open_asset_keys
-        ]
-        skipped_open = len(marketable_assets) - len(eligible_assets)
+        eligible_assets, skipped_pending, skipped_repricing = (
+            self.select_full_run_assets(marketable_assets)
+        )
         asset_keys = {
             (
                 int(asset["appid"]),
@@ -935,7 +959,8 @@ class ListingManager:
         assetids = [str(asset["assetid"]) for asset in eligible_assets]
         report(
             f"[3/4] 非黑名单可出售 {len(marketable_assets)} 件，"
-            f"已有开放任务跳过 {skipped_open} 件，"
+            f"本次等待手机确认跳过 {skipped_pending} 件，"
+            f"调价临时下架跳过 {skipped_repricing} 件，"
             f"实际待生成计划 {len(eligible_assets)} 件"
         )
         report(
@@ -994,6 +1019,7 @@ class ListingManager:
             for record in self.store.listings(
                 [ListingState.PLANNED, ListingState.FAILED]
             )
+            if self.asset_key(record) not in self._repricing_asset_keys
         ]
         report(f"[4/4] 开始执行 {len(pending_ids)} 条待提交计划")
         if pending_ids:

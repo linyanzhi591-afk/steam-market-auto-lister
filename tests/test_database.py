@@ -289,7 +289,7 @@ def test_settings_persist_and_runtime_cache_is_cleared(tmp_path: Path) -> None:
     assert database.blacklist()[0]["market_hash_name"] == "Blocked"
 
 
-def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Path) -> None:
+def test_startup_cache_only_preserves_active_listing(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     pending_asset = InventoryAsset(
         appid=730,
@@ -357,7 +357,7 @@ def test_startup_cache_clears_pending_and_preserves_active_listing(tmp_path: Pat
     active = database.listing(active_id)
     assert active is not None
     assert active.steam_listing_id == "listing-101"
-    assert database.listing(review_id) is not None
+    assert database.listing(review_id) is None
     assert database.inventory(marketable_only=False) == []
 
 
@@ -577,7 +577,7 @@ def test_group_sync_uses_latest_submission_when_asset_has_stale_duplicates(
 
 @pytest.mark.parametrize(
     ("local_count", "steam_count", "matched", "pending", "external"),
-    [(2, 3, 2, 0, 1), (3, 2, 2, 1, 0)],
+    [(2, 3, 2, 0, 1), (3, 2, 2, 0, 0)],
 )
 def test_group_quantity_mismatch_statuses(
     tmp_path: Path,
@@ -667,11 +667,39 @@ def test_group_match_requires_all_four_key_fields(
     assert sum(
         record.sync_status is ListingSyncStatus.PENDING_MATCH
         for record in open_records
-    ) == 1
+    ) == 0
     assert sum(
         record.sync_status is ListingSyncStatus.EXTERNAL
         for record in open_records
     ) == 1
+
+
+def test_unmatched_submission_does_not_cross_run_as_pending_cache(
+    tmp_path: Path,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    listing_id = create_submitted_group(database, 1)[0]
+
+    database.sync_active_listing_groups([])
+
+    record = database.listing(listing_id)
+    assert record is not None
+    assert record.state is ListingState.CANCELLED
+    assert database.listings([ListingState.PENDING_CONFIRMATION]) == []
+
+
+def test_current_run_pending_asset_can_be_protected(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    listing_id = create_submitted_group(database, 1)[0]
+
+    database.sync_active_listing_groups(
+        [],
+        protected_pending_asset_keys={(730, "2", "local-0")},
+    )
+
+    record = database.listing(listing_id)
+    assert record is not None
+    assert record.state is ListingState.PENDING_CONFIRMATION
 
 
 def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:

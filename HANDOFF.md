@@ -4,9 +4,13 @@
 `develop`，目录 `D:\tools\steam-market-auto-lister-dev`；稳定版目录为 `D:\tools\steam-market-auto-lister`，勿主动改动或推送。
 
 ## 最新提交
-本次提交：修复同资产多条有效提交导致的在售同步唯一约束冲突。
+本次提交：按运行期状态筛选全部非黑名单可出售库存。
 
 ## 已完成内容
+- 完整运行第 3 步不再按数据库开放任务跳过库存；除黑名单外，仅跳过本次运行内等待手机确认和调价临时下架的资产。
+- 等待手机确认使用 `ListingManager` 运行期资产集合保护；下一次完整运行会清空，不再从未匹配的历史提交跨运行恢复 `pending_confirmation`。
+- 调价临时下架使用独立运行期资产集合，既不参与第 3 步普通计划生成，也不在调价失败后进入第 4 步普通新上架路径。
+- 启动缓存现在仅保留已确认 `active` 挂单；旧 `price_review` 会在新运行中按最新库存和价格重新生成。
 - 本地同步候选除按任务 ID 保留最新提交外，还按 `(appid, contextid, assetid)` 仅保留最新一条；`reprice_history` 也不会为已有候选的同一资产重复补充任务。
 - `sync_active_listing_groups` 遇到提交记录仍指向已清理的旧任务、但同一资产已有开放任务时，复用现有开放任务并修正 `listing_submissions.listing_record_id`，不再重复插入同一 `(appid, contextid, assetid)`。
 - 库存、挂单和待确认使用 `(appid, contextid, assetid)` 复合键，旧 SQLite 自动迁移。
@@ -19,9 +23,10 @@
 - `run-full-once.bat` 完整运行时会在 Steam 操作成功后同步打印饰品明细：超时调价分别打印下架与重新上架，普通任务打印新上架；日志包含饰品名和买家支付价格，调价下架还包含原价与目标价。业务判断和执行顺序未改动。
 
 ## 验证
+- 真实数据库临时副本模拟“新运行启动、库存回填、Steam 当前在售为空”：非黑名单可出售 215 件，可生成计划 215 件，开放任务冲突 0；临时副本已删除。
+- `.venv\Scripts\python.exe -m pytest -q tests\test_database.py tests\test_listing_manager.py`：37 项通过。
+- `.venv\Scripts\python.exe -m ruff check app\core\database.py app\services\listing_manager.py tests\test_database.py tests\test_listing_manager.py`：通过。
 - 真实 `data/steam_lister.sqlite3` 的临时副本执行 `sync_active_listing_groups([])`：处理 249 条记录，无唯一约束错误；临时副本已删除。
-- `.venv\Scripts\python.exe -m pytest -q tests\test_database.py tests\test_listing_manager.py`：33 项通过。
-- `.venv\Scripts\python.exe -m ruff check app\core\database.py tests\test_database.py`：通过。
 - `node --check app\static\app.js`：通过。
 
 ## 未完成事项
