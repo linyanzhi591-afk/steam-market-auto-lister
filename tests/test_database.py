@@ -410,6 +410,55 @@ def test_external_active_listing_is_imported(tmp_path: Path) -> None:
     assert listing.sync_status is ListingSyncStatus.EXTERNAL
 
 
+def test_relisted_program_asset_is_matched_when_price_changed(tmp_path: Path) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    asset = {
+        "assetid": "relisted-asset",
+        "appid": 730,
+        "contextid": "2",
+        "market_hash_name": "Relisted Item",
+    }
+    listing_id = database.create_listing(
+        asset,
+        PricingStrategy.ROBUST_MEDIAN,
+        900,
+        1035,
+    )
+    database.update_listing(
+        listing_id,
+        state=ListingState.PENDING_CONFIRMATION,
+        listing_requested_at="2026-07-25T14:25:26+00:00",
+    )
+    record = database.listing(listing_id)
+    assert record is not None
+    submission_id = database.create_listing_submission(
+        record, datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
+    )
+    database.finish_listing_submission(submission_id, steam_listing_id="old-id")
+
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": "new-id",
+                "assetid": "relisted-asset",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Relisted Item",
+                "buyer_price_minor": 1100,
+                "listed_at": "2026-08-02T00:00:00+00:00",
+            }
+        ]
+    )
+
+    restored = database.listing(listing_id)
+    assert restored is not None
+    assert restored.sync_status is ListingSyncStatus.MATCHED
+    assert restored.price_source == "strategy"
+    assert restored.steam_listing_id == "new-id"
+    assert restored.buyer_price_minor == 1100
+    assert restored.next_action_at is not None
+
+
 def test_group_quantity_match_ignores_listing_asset_and_date(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     listing_ids = create_submitted_group(database, 2)

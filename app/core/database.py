@@ -875,6 +875,37 @@ class Database:
             for rows in local_groups.values():
                 rows.sort(key=lambda row: int(row["id"]))
 
+            # 手动下架后再次由程序上架时，Steam 可能已经使用了新的价格。
+            # 这类挂单不能只按当前价格分组，否则会被误判为外部挂单。
+            reassigned_remote_groups: dict[
+                tuple[int, str, str, int], list[dict[str, object]]
+            ] = defaultdict(list)
+            for current_key, rows in remote_groups.items():
+                for remote_row in rows:
+                    remote_assetid = str(remote_row.get("assetid") or "")
+                    asset_key = (
+                        current_key[0],
+                        current_key[1],
+                        remote_assetid,
+                    )
+                    submission = latest_submissions_by_asset.get(asset_key)
+                    if submission is not None:
+                        submission_key = (
+                            int(submission["appid"]),
+                            str(submission["contextid"]),
+                            str(submission["market_hash_name"]),
+                            int(submission["buyer_price_minor"]),
+                        )
+                        if submission_key != current_key and local_groups.get(
+                            submission_key
+                        ):
+                            reassigned_remote_groups[submission_key].append(
+                                remote_row
+                            )
+                            continue
+                    reassigned_remote_groups[current_key].append(remote_row)
+            remote_groups = reassigned_remote_groups
+
             listing_rows = db.execute("SELECT * FROM listings ORDER BY id").fetchall()
             listings_by_id = {int(row["id"]): row for row in listing_rows}
             unique_open_rows = [
@@ -943,6 +974,9 @@ class Database:
                 for index, metadata in enumerate(local_rows[:matched_count]):
                     is_matched = index < matched_count
                     remote_row = steam_rows[index] if is_matched else None
+                    actual_buyer_price = (
+                        buyer_price_for(remote_row) if remote_row else buyer_price
+                    )
                     listing_record_id = metadata["listing_record_id"]
                     existing = (
                         listings_by_id.get(int(listing_record_id))
@@ -1017,7 +1051,7 @@ class Database:
                                 profile.id,
                                 stage,
                                 int(metadata["seller_price_minor"]),
-                                buyer_price,
+                                actual_buyer_price,
                                 steam_listing_id,
                                 steam_listed_at,
                                 requested_at,
@@ -1056,7 +1090,7 @@ class Database:
                                 profile.id,
                                 stage,
                                 int(metadata["seller_price_minor"]),
-                                buyer_price,
+                                actual_buyer_price,
                                 minimum_buyer_price,
                                 steam_listing_id,
                                 steam_listed_at,
