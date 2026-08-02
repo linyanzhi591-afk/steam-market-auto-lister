@@ -14,6 +14,7 @@ from app.core.models import (
     FullRunResult,
     ListingRecord,
     ListingState,
+    ListingSyncStatus,
     PricePoint,
     PricingStrategy,
     StageAction,
@@ -933,7 +934,10 @@ class ListingManager:
                 f"[2/4] 超时检查完成：处理 {result.expired_processed} 条挂单"
             )
             for record in self.store.listings([ListingState.ACTIVE]):
-                if record.error_message:
+                if (
+                    record.error_message
+                    and record.sync_status is not ListingSyncStatus.EXTERNAL
+                ):
                     message = f"{record.market_hash_name}：{record.error_message}"
                     if record.error_message in LEGACY_TIME_REFERENCE_WARNINGS:
                         result.warnings.append(message)
