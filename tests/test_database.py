@@ -674,10 +674,17 @@ def test_group_quantity_mismatch_statuses(
         sum(record.sync_status is ListingSyncStatus.EXTERNAL for record in records)
         == external
     )
-    assert all(
-        record.error_message and "数量不一致" in record.error_message
-        for record in records
-    )
+    if steam_count > local_count:
+        assert all(
+            record.error_message and "数量不一致" in record.error_message
+            for record in records
+        )
+    else:
+        assert all(record.error_message is None for record in records)
+        with database.connect() as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM listing_submissions WHERE status = 'sold'"
+            ).fetchone()[0] == local_count - steam_count
 
 
 @pytest.mark.parametrize(

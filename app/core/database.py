@@ -964,7 +964,7 @@ class Database:
                 pending_count = max(local_count - steam_count, 0)
                 external_count = max(steam_count - local_count, 0)
                 mismatch_message = None
-                if local_count != steam_count:
+                if steam_count > local_count:
                     mismatch_message = (
                         f"数量不一致：本地提交 {local_count}，"
                         f"Steam 在售 {steam_count}，已匹配 {matched_count}，"
@@ -1262,10 +1262,18 @@ class Database:
                             steam_listing_id = NULL, steam_listed_at = NULL,
                             active_since = NULL, next_action_at = NULL,
                             sync_status = 'pending_match',
-                            error_message =
-                                '本次运行未在 Steam 当前在售中匹配，已释放库存',
+                            error_message = NULL,
                             updated_at = ?
                         WHERE id = ?
+                        """,
+                        (now_text, listing_id),
+                    )
+                    db.execute(
+                        """
+                        UPDATE listing_submissions
+                        SET status = 'sold', error_message = NULL, updated_at = ?
+                        WHERE listing_record_id = ?
+                          AND status IN ('requested', 'submitted', 'active')
                         """,
                         (now_text, listing_id),
                     )
