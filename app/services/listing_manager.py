@@ -970,6 +970,7 @@ class ListingManager:
         report(
             f"[3/4] 开始同步 {len(assetids)} 件可出售库存的30天价格并生成计划"
         )
+        price_sync_failed = False
         if assetids:
             try:
                 prices = await self.market.sync_selected_prices(
@@ -979,33 +980,64 @@ class ListingManager:
                 report(
                     f"[3/4] 价格同步完成：更新 {result.price_items_updated} 种饰品"
                 )
-                result.errors.extend(
-                    f"价格同步：{error}" for error in prices.errors
-                )
-                profile = self.store.strategy_profile()
-                plans = await self.create_plans(
-                    profile.stages[0].pricing_source,
-                    currency,
-                    strategy_profile_id=profile.id,
-                    assetids=assetids,
-                    asset_keys=asset_keys,
-                    maximum_items=len(assetids),
-                )
-                result.plans_created = len(plans)
-                result.price_reviews = sum(
-                    plan.state is ListingState.PRICE_REVIEW for plan in plans
-                )
-                report(
-                    f"[3/4] 计划生成完成：正常/总计 "
-                    f"{result.plans_created - result.price_reviews}/"
-                    f"{result.plans_created}，异常价格 {result.price_reviews} 条"
-                )
-                for plan in plans:
-                    if plan.state is ListingState.PRICE_REVIEW:
-                        result.errors.append(
-                            f"异常价格待确认：{plan.market_hash_name}，"
-                            f"上架价 {plan.buyer_price_minor / 100:.2f}"
+                if prices.errors:
+                    price_sync_failed = True
+                    result.errors.extend(
+                        f"价格同步：{error}" for error in prices.errors
+                    )
+                    report(
+                        f"[3/4] 价格同步失败：{len(prices.errors)} 种饰品，"
+                        "已停止生成计划"
+                    )
+                else:
+                    missing_price_names = sorted(
+                        {
+                            str(asset["market_hash_name"])
+                            for asset in eligible_assets
+                            if not self.store.prices(
+                                int(asset["appid"]),
+                                str(asset["market_hash_name"]),
+                                currency.value,
+                            )
+                        }
+                    )
+                    if missing_price_names:
+                        price_sync_failed = True
+                        result.errors.extend(
+                            "价格同步："
+                            f"{name} 未取得可用的最近30天价格数据，"
+                            "已停止生成计划"
+                            for name in missing_price_names
                         )
+                        report(
+                            f"[3/4] 价格数据缺失：{len(missing_price_names)} 种饰品，"
+                            "已停止生成计划"
+                        )
+                    else:
+                        profile = self.store.strategy_profile()
+                        plans = await self.create_plans(
+                            profile.stages[0].pricing_source,
+                            currency,
+                            strategy_profile_id=profile.id,
+                            assetids=assetids,
+                            asset_keys=asset_keys,
+                            maximum_items=len(assetids),
+                        )
+                        result.plans_created = len(plans)
+                        result.price_reviews = sum(
+                            plan.state is ListingState.PRICE_REVIEW for plan in plans
+                        )
+                        report(
+                            f"[3/4] 计划生成完成：正常/总计 "
+                            f"{result.plans_created - result.price_reviews}/"
+                            f"{result.plans_created}，异常价格 {result.price_reviews} 条"
+                        )
+                        for plan in plans:
+                            if plan.state is ListingState.PRICE_REVIEW:
+                                result.errors.append(
+                                    f"异常价格待确认：{plan.market_hash_name}，"
+                                    f"上架价 {plan.buyer_price_minor / 100:.2f}"
+                                )
             except (
                 OSError,
                 PlaywrightError,
@@ -1023,7 +1055,8 @@ class ListingManager:
             for record in self.store.listings(
                 [ListingState.PLANNED, ListingState.FAILED]
             )
-            if self.asset_key(record) not in self._repricing_asset_keys
+            if not price_sync_failed
+            and self.asset_key(record) not in self._repricing_asset_keys
         ]
         report(f"[4/4] 开始执行 {len(pending_ids)} 条待提交计划")
         if pending_ids:

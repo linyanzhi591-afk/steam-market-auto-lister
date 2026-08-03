@@ -392,6 +392,46 @@ def test_full_run_checks_sync_and_expired_when_inventory_is_empty() -> None:
     ]
 
 
+def test_full_run_blocks_submission_when_price_sync_fails() -> None:
+    class Store:
+        def settings(self) -> AppSettings:
+            return AppSettings()
+
+        def inventory(self, *, marketable_only: bool = False):
+            assert marketable_only is True
+            return [
+                {
+                    "assetid": "asset-1",
+                    "appid": 730,
+                    "contextid": "2",
+                    "market_hash_name": "Test Item",
+                }
+            ]
+
+        def listings(self, _states):
+            return []
+
+    class Market:
+        async def scan_inventory(self) -> SyncResult:
+            return SyncResult(inventory_count=1, marketable_count=1)
+
+        async def sync_selected_prices(self, _assetids, _currency) -> SyncResult:
+            return SyncResult(errors=["Test Item：价格历史为空"])
+
+    class Manager(ListingManager):
+        async def sync_states(self) -> SyncResult:
+            return SyncResult()
+
+        async def process_expired(self, _currency: Currency, progress=None) -> int:
+            return 0
+
+    result = asyncio.run(Manager(store=Store(), market=Market()).full_run())
+
+    assert result.plans_created == 0
+    assert result.listings_submitted == 0
+    assert result.errors == ["价格同步：Test Item：价格历史为空"]
+
+
 def test_full_run_asset_selection_only_uses_runtime_exclusions() -> None:
     assets = [
         {
