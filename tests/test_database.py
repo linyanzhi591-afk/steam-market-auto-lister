@@ -459,7 +459,7 @@ def test_relisted_program_asset_is_matched_when_price_changed(tmp_path: Path) ->
     assert restored.next_action_at is not None
 
 
-def test_group_quantity_match_ignores_listing_asset_and_date(tmp_path: Path) -> None:
+def test_group_quantity_match_does_not_match_unrelated_assets(tmp_path: Path) -> None:
     database = make_database(tmp_path / "test.sqlite3")
     listing_ids = create_submitted_group(database, 2)
     database.sync_active_listing_groups(
@@ -479,22 +479,48 @@ def test_group_quantity_match_ignores_listing_asset_and_date(tmp_path: Path) -> 
 
     restored = [database.listing(listing_id) for listing_id in listing_ids]
     assert all(record is not None for record in restored)
-    assert all(record.state is ListingState.ACTIVE for record in restored if record)
+    assert all(record.state is ListingState.CANCELLED for record in restored if record)
     assert all(
-        record.sync_status is ListingSyncStatus.MATCHED
+        record.sync_status is ListingSyncStatus.PENDING_MATCH
         for record in restored
         if record
     )
-    assert all(
-        record.strategy is PricingStrategy.ROBUST_MEDIAN and record.stage == 1
-        for record in restored
-        if record
+
+
+def test_group_sync_matches_the_actual_asset_not_another_same_name_asset(
+    tmp_path: Path,
+) -> None:
+    database = make_database(tmp_path / "test.sqlite3")
+    listing_ids = create_submitted_group(database, 2)
+    database.sync_active_listing_groups(
+        [
+            {
+                "listing_id": "remote-local-0",
+                "assetid": "local-0",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+                "buyer_price_minor": 1035,
+            },
+            {
+                "listing_id": "remote-external",
+                "assetid": "not-local",
+                "appid": 730,
+                "contextid": "2",
+                "market_hash_name": "Grouped Item",
+                "buyer_price_minor": 1035,
+            },
+        ]
     )
-    assert all(
-        record.active_since == datetime(2026, 7, 25, 14, 25, 26, tzinfo=UTC)
-        for record in restored
-        if record
-    )
+
+    local = database.listing(listing_ids[0])
+    other = database.listing(listing_ids[1])
+    assert local is not None and other is not None
+    assert local.state is ListingState.ACTIVE
+    assert local.sync_status is ListingSyncStatus.MATCHED
+    assert local.steam_listing_id == "remote-local-0"
+    assert other.state is ListingState.CANCELLED
+    assert other.sync_status is ListingSyncStatus.PENDING_MATCH
 
 
 def test_group_sync_reuses_open_listing_when_submission_reference_is_stale(
@@ -642,7 +668,11 @@ def test_group_quantity_mismatch_statuses(
         [
             {
                 "listing_id": f"remote-{index}",
-                "assetid": f"ignored-{index}",
+                "assetid": (
+                    f"local-{index}"
+                    if index < local_count
+                    else f"external-{index}"
+                ),
                 "appid": 730,
                 "contextid": "2",
                 "market_hash_name": "Grouped Item",
@@ -804,7 +834,7 @@ def test_confirmed_age_reprice_is_persistent_reference(tmp_path: Path) -> None:
         [
             {
                 "listing_id": "irrelevant-new-listing",
-                "assetid": "different-asset",
+                "assetid": "100",
                 "appid": 730,
                 "contextid": "2",
                 "market_hash_name": "Test Item",

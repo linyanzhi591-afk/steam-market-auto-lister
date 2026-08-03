@@ -960,9 +960,38 @@ class Database:
                 local_rows = local_groups.get(key, [])
                 local_count = len(local_rows)
                 steam_count = len(steam_rows)
-                matched_count = min(local_count, steam_count)
-                pending_count = max(local_count - steam_count, 0)
-                external_count = max(steam_count - local_count, 0)
+                exact_asset_matching = bool(steam_rows) and all(
+                    str(row.get("assetid") or "") for row in steam_rows
+                )
+                if exact_asset_matching:
+                    remote_by_asset = {
+                        str(row["assetid"]): row for row in steam_rows
+                    }
+                    matched_pairs = [
+                        (metadata, remote_by_asset[str(metadata["assetid"])])
+                        for metadata in local_rows
+                        if str(metadata["assetid"]) in remote_by_asset
+                    ]
+                    matched_remote_ids = {
+                        str(remote_row["listing_id"])
+                        for _metadata, remote_row in matched_pairs
+                    }
+                    unmatched_remote_rows = [
+                        row
+                        for row in steam_rows
+                        if str(row["listing_id"]) not in matched_remote_ids
+                    ]
+                    matched_count = len(matched_pairs)
+                    pending_count = 0
+                    external_count = len(unmatched_remote_rows)
+                else:
+                    matched_count = min(local_count, steam_count)
+                    pending_count = max(local_count - steam_count, 0)
+                    external_count = max(steam_count - local_count, 0)
+                    matched_pairs = list(
+                        zip(local_rows[:matched_count], steam_rows[:matched_count])
+                    )
+                    unmatched_remote_rows = steam_rows[matched_count:]
                 mismatch_message = None
                 if steam_count > local_count:
                     mismatch_message = (
@@ -971,9 +1000,8 @@ class Database:
                         f"待匹配 {pending_count}，外部 {external_count}"
                     )
 
-                for index, metadata in enumerate(local_rows[:matched_count]):
-                    is_matched = index < matched_count
-                    remote_row = steam_rows[index] if is_matched else None
+                for metadata, remote_row in matched_pairs:
+                    is_matched = True
                     actual_buyer_price = (
                         buyer_price_for(remote_row) if remote_row else buyer_price
                     )
@@ -1155,7 +1183,7 @@ class Database:
 
                 reusable_external = external_groups.get(key, [])
                 for index in range(external_count):
-                    remote_row = steam_rows[matched_count + index]
+                    remote_row = unmatched_remote_rows[index]
                     steam_listing_id = (
                         str(remote_row.get("listing_id") or "") or None
                     )
