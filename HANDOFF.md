@@ -3,7 +3,7 @@
 ## 当前分支
 `develop`，目录 `D:\tools\steam-market-auto-lister-dev`。已推送至 `origin/develop`。
 
-## 最新提交
+## 最近一次业务提交
 `c9cf2f5 按资产ID精确匹配市场挂单`
 
 ## 已完成内容
