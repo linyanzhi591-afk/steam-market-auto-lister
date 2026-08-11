@@ -1,17 +1,18 @@
 # 开发版交接
 
 ## 当前分支
-`develop`，目录 `D:\tools\steam-market-auto-lister-dev`。未推送。
+`develop`，目录 `D:\tools\steam-market-auto-lister-dev`。已推送至 `origin/develop`。
 
 ## 最新提交
-`a91b0a5 阻止价格同步失败时继续上架`
+`c9cf2f5 按资产ID精确匹配市场挂单`
 
 ## 已完成内容
 - 修复同一资产重新上架且价格变化时被误判为外部挂单的问题。
 - 本地提交数量多于 Steam 在售数量时，释放多出的记录并标记提交为 `sold`，不再重复计入。
 - 外部挂单保留状态跟踪，不参与自动调价，也不计入完整运行失败。
 - 价格同步失败或目标物品没有可用价格历史时，逐项报告并停止生成/提交本次新上架计划；已有在售挂单不受影响。
-- 相关测试通过：`39 passed`。
+- 按 `(appid, contextid, assetid)` 精确匹配 Steam 返回的资产，避免同款不同资产 ID 被错误关联。
+- 相关测试通过：`67 passed`；Ruff、前端语法检查和 `git diff --check` 均通过。
 
 ## 未完成事项
 无。本任务不再扩展功能。
