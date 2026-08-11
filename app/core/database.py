@@ -1,6 +1,8 @@
+import hashlib
 import json
 import re
 import sqlite3
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +15,7 @@ from app.core.models import (
     InventoryAsset,
     ListingRecord,
     ListingState,
+    ListingSyncStatus,
     PricingStrategy,
     RepriceHistory,
     StageAction,
@@ -47,7 +50,7 @@ class Database:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS inventory_assets (
-                    assetid TEXT PRIMARY KEY,
+                    assetid TEXT NOT NULL,
                     appid INTEGER NOT NULL,
                     contextid TEXT NOT NULL,
                     classid TEXT NOT NULL,
@@ -59,7 +62,8 @@ class Database:
                     tradable INTEGER NOT NULL,
                     commodity INTEGER NOT NULL,
                     icon_url TEXT,
-                    last_seen_at TEXT NOT NULL
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (appid, contextid, assetid)
                 );
                 CREATE INDEX IF NOT EXISTS idx_inventory_market_name
                     ON inventory_assets(appid, market_hash_name);
@@ -89,6 +93,7 @@ class Database:
                     minimum_buyer_price_minor INTEGER NOT NULL DEFAULT 1,
                     steam_listing_id TEXT,
                     steam_listed_at TEXT,
+                    listing_requested_at TEXT,
                     error_message TEXT,
                     price_source TEXT NOT NULL DEFAULT 'strategy',
                     strategy_seller_price_minor INTEGER,
@@ -97,11 +102,12 @@ class Database:
                     price_difference_percent REAL,
                     active_since TEXT,
                     next_action_at TEXT,
+                    sync_status TEXT NOT NULL DEFAULT 'pending_match',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_listing_per_asset
-                    ON listings(assetid)
+                    ON listings(appid, contextid, assetid)
                     WHERE state IN ('planned', 'pending_confirmation', 'active');
 
                 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -138,6 +144,7 @@ class Database:
                     batch_id TEXT NOT NULL,
                     listing_record_id INTEGER,
                     appid INTEGER NOT NULL,
+                    contextid TEXT NOT NULL DEFAULT '',
                     market_hash_name TEXT NOT NULL,
                     assetid TEXT NOT NULL,
                     old_steam_listing_id TEXT NOT NULL,
@@ -156,8 +163,77 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reprice_history_item
                     ON reprice_history(appid, market_hash_name, status, confirmed_at);
+
+                CREATE TABLE IF NOT EXISTS listing_submissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    listing_record_id INTEGER,
+                    assetid TEXT NOT NULL,
+                    appid INTEGER NOT NULL,
+                    contextid TEXT NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    strategy_profile_id INTEGER,
+                    stage INTEGER NOT NULL,
+                    seller_price_minor INTEGER NOT NULL,
+                    buyer_price_minor INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    steam_listing_id TEXT,
+                    status TEXT NOT NULL,
+                    error_message TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_listing_submissions_asset
+                    ON listing_submissions(
+                        appid, contextid, assetid, buyer_price_minor, requested_at
+                    );
                 """
             )
+            inventory_columns = db.execute(
+                "PRAGMA table_info(inventory_assets)"
+            ).fetchall()
+            inventory_primary_key = [
+                row["name"]
+                for row in sorted(inventory_columns, key=lambda row: row["pk"])
+                if row["pk"]
+            ]
+            if inventory_primary_key != ["appid", "contextid", "assetid"]:
+                db.execute("DROP INDEX IF EXISTS idx_inventory_market_name")
+                db.execute(
+                    "ALTER TABLE inventory_assets RENAME TO inventory_assets_legacy"
+                )
+                db.executescript(
+                    """
+                    CREATE TABLE inventory_assets (
+                        assetid TEXT NOT NULL,
+                        appid INTEGER NOT NULL,
+                        contextid TEXT NOT NULL,
+                        classid TEXT NOT NULL,
+                        instanceid TEXT NOT NULL,
+                        amount INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        market_hash_name TEXT NOT NULL,
+                        marketable INTEGER NOT NULL,
+                        tradable INTEGER NOT NULL,
+                        commodity INTEGER NOT NULL,
+                        icon_url TEXT,
+                        last_seen_at TEXT NOT NULL,
+                        PRIMARY KEY (appid, contextid, assetid)
+                    );
+                    INSERT OR REPLACE INTO inventory_assets (
+                        assetid, appid, contextid, classid, instanceid, amount,
+                        name, market_hash_name, marketable, tradable, commodity,
+                        icon_url, last_seen_at
+                    )
+                    SELECT
+                        assetid, appid, contextid, classid, instanceid, amount,
+                        name, market_hash_name, marketable, tradable, commodity,
+                        icon_url, last_seen_at
+                    FROM inventory_assets_legacy;
+                    DROP TABLE inventory_assets_legacy;
+                    CREATE INDEX idx_inventory_market_name
+                        ON inventory_assets(appid, market_hash_name);
+                    """
+                )
             defaults = {
                 "currency": Currency.CNY.value,
                 "default_strategy": PricingStrategy.ROBUST_MEDIAN.value,
@@ -195,6 +271,8 @@ class Database:
                 "strategy_buyer_price_minor": "INTEGER",
                 "reference_reprice_id": "INTEGER",
                 "price_difference_percent": "REAL",
+                "listing_requested_at": "TEXT",
+                "sync_status": "TEXT NOT NULL DEFAULT 'pending_match'",
             }
             for name, definition in listing_migrations.items():
                 if name not in columns:
@@ -211,11 +289,26 @@ class Database:
                 db.execute(
                     "ALTER TABLE reprice_history ADD COLUMN strategy_profile_id INTEGER"
                 )
+            if "contextid" not in reprice_columns:
+                db.execute(
+                    "ALTER TABLE reprice_history ADD COLUMN contextid TEXT NOT NULL DEFAULT ''"
+                )
+                db.execute(
+                    """
+                    UPDATE reprice_history
+                    SET contextid = COALESCE((
+                        SELECT contextid FROM listing_submissions
+                        WHERE listing_submissions.listing_record_id =
+                              reprice_history.listing_record_id
+                        ORDER BY listing_submissions.id DESC LIMIT 1
+                    ), '')
+                    """
+                )
             db.execute("DROP INDEX IF EXISTS idx_one_open_listing_per_asset")
             db.execute(
                 """
                 CREATE UNIQUE INDEX idx_one_open_listing_per_asset
-                ON listings(assetid)
+                ON listings(appid, contextid, assetid)
                 WHERE state IN (
                     'planned', 'price_review', 'pending_confirmation', 'active'
                 )
@@ -300,12 +393,20 @@ class Database:
                         (json.dumps(stages, ensure_ascii=False), row["id"]),
                     )
 
-    def clear_runtime_cache(self) -> None:
-        """清除库存、行情和全部挂单任务；黑名单与设置继续保留。"""
+    def clear_runtime_cache(self, *, preserve_active_listings: bool = False) -> None:
+        """清除库存和行情；启动时仅保留已确认在售的挂单。"""
         with self.connect() as db:
             db.execute("DELETE FROM inventory_assets")
             db.execute("DELETE FROM price_history")
-            db.execute("DELETE FROM listings")
+            if preserve_active_listings:
+                db.execute(
+                    """
+                    DELETE FROM listings
+                WHERE state != 'active'
+                    """
+                )
+            else:
+                db.execute("DELETE FROM listings")
 
     def replace_inventory(self, assets: list[InventoryAsset]) -> None:
         seen_at = utc_now()
@@ -317,8 +418,7 @@ class Database:
                     assetid, appid, contextid, classid, instanceid, amount, name,
                     market_hash_name, marketable, tradable, commodity, icon_url, last_seen_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(assetid) DO UPDATE SET
-                    appid=excluded.appid, contextid=excluded.contextid,
+                ON CONFLICT(appid, contextid, assetid) DO UPDATE SET
                     classid=excluded.classid, instanceid=excluded.instanceid,
                     amount=excluded.amount, name=excluded.name,
                     market_hash_name=excluded.market_hash_name,
@@ -633,182 +733,636 @@ class Database:
         remote: list[dict[str, object]],
         fee_options: dict[str, float | int] | None = None,
     ) -> int:
-        """将 Steam 中已有、但本地尚未记录的在售挂单导入任务表。"""
-        profile = self.strategy_profile()
-        profiles = {item.id: item for item in self.strategy_profiles()}
-        now = datetime.now(UTC)
-        imported = 0
-        with self.connect() as db:
-            for item in remote:
-                steam_listing_id = str(item.get("listing_id", ""))
-                if not steam_listing_id:
-                    continue
-                existing = db.execute(
-                    "SELECT id FROM listings WHERE steam_listing_id = ?",
-                    (steam_listing_id,),
-                ).fetchone()
-                remote_assetid = str(item.get("assetid") or "")
-                if existing is None and remote_assetid:
-                    existing = db.execute(
-                        """
-                        SELECT id FROM listings
-                        WHERE assetid = ?
-                          AND state IN (?, ?, ?, ?, ?)
-                        ORDER BY id DESC
-                        LIMIT 1
-                        """,
-                        (
-                            remote_assetid,
-                            ListingState.PLANNED.value,
-                            ListingState.PRICE_REVIEW.value,
-                            ListingState.PENDING_CONFIRMATION.value,
-                            ListingState.ACTIVE.value,
-                            ListingState.PAUSED.value,
-                        ),
-                    ).fetchone()
-                assetid = remote_assetid or f"external:{steam_listing_id}"
-                appid = int(item.get("appid") or 0)
-                remote_contextid = str(item.get("contextid") or "")
-                contextid = remote_contextid or "0"
-                remote_name = str(item.get("market_hash_name") or "")
-                market_hash_name = remote_name or "未知在售物品"
-                buyer_price = int(item.get("buyer_price_minor") or 0)
-                if buyer_price <= 0:
-                    number_match = re.search(
-                        r"\d[\d,.]*", str(item.get("display_price") or "")
-                    )
-                    if number_match:
-                        numeric = number_match.group(0)
-                        if "," in numeric and "." not in numeric:
-                            numeric = numeric.replace(",", ".")
-                        else:
-                            numeric = numeric.replace(",", "")
-                        try:
-                            buyer_price = round(float(numeric) * 100)
-                        except ValueError:
-                            buyer_price = 0
-                fee_values = fee_options or {}
-                minimum_buyer_price = 1 + int(
-                    fee_values.get("minimum_total_fee", 2)
-                )
-                buyer_price = max(buyer_price, minimum_buyer_price)
-                seller_price = max(1, buyer_price)
-                if buyer_price >= minimum_buyer_price:
-                    from app.services.pricing import seller_receive_for_buyer_pay
+        """兼容旧调用名；实际执行四字段分组数量同步。"""
+        return self.sync_active_listing_groups(remote, fee_options)
 
+    def sync_active_listing_groups(
+        self,
+        remote: list[dict[str, object]],
+        fee_options: dict[str, float | int] | None = None,
+        protected_pending_asset_keys: set[tuple[int, str, str]] | None = None,
+    ) -> int:
+        """仅按四字段分组键及组内数量同步 Steam 当前在售。"""
+        from app.services.pricing import seller_receive_for_buyer_pay
+
+        fee_values = fee_options or {}
+        minimum_buyer_price = 1 + int(fee_values.get("minimum_total_fee", 2))
+        now = datetime.now(UTC)
+        now_text = now.isoformat()
+        profiles = {profile.id: profile for profile in self.strategy_profiles()}
+        default_profile = self.strategy_profile()
+
+        def buyer_price_for(item: dict[str, object]) -> int:
+            buyer_price = int(item.get("buyer_price_minor") or 0)
+            if buyer_price <= 0:
+                number_match = re.search(
+                    r"\d[\d,.]*", str(item.get("display_price") or "")
+                )
+                if number_match:
+                    numeric = number_match.group(0)
+                    numeric = (
+                        numeric.replace(",", ".")
+                        if "," in numeric and "." not in numeric
+                        else numeric.replace(",", "")
+                    )
+                    try:
+                        buyer_price = round(float(numeric) * 100)
+                    except ValueError:
+                        buyer_price = 0
+            return max(buyer_price, minimum_buyer_price)
+
+        remote_groups: dict[
+            tuple[int, str, str, int], list[dict[str, object]]
+        ] = defaultdict(list)
+        for item in remote:
+            key = (
+                int(item.get("appid") or 0),
+                str(item.get("contextid") or "0"),
+                str(item.get("market_hash_name") or "未知在售物品"),
+                buyer_price_for(item),
+            )
+            remote_groups[key].append(item)
+
+        changed = 0
+        with self.connect() as db:
+            submissions = db.execute(
+                """
+                SELECT * FROM listing_submissions
+                WHERE status IN ('requested', 'submitted', 'active')
+                ORDER BY id DESC
+                """
+            ).fetchall()
+            latest_submissions: dict[int, sqlite3.Row] = {}
+            for submission in submissions:
+                identity = int(submission["listing_record_id"] or -submission["id"])
+                latest_submissions.setdefault(identity, submission)
+
+            latest_submissions_by_asset: dict[
+                tuple[int, str, str], sqlite3.Row
+            ] = {}
+            for submission in latest_submissions.values():
+                asset_key = (
+                    int(submission["appid"]),
+                    str(submission["contextid"]),
+                    str(submission["assetid"]),
+                )
+                latest_submissions_by_asset.setdefault(asset_key, submission)
+
+            local_groups: dict[
+                tuple[int, str, str, int],
+                list[sqlite3.Row | dict[str, object]],
+            ] = defaultdict(list)
+            for submission in latest_submissions_by_asset.values():
+                key = (
+                    int(submission["appid"]),
+                    str(submission["contextid"]),
+                    str(submission["market_hash_name"]),
+                    int(submission["buyer_price_minor"]),
+                )
+                local_groups[key].append(submission)
+
+            history_rows = db.execute(
+                """
+                SELECT * FROM reprice_history
+                WHERE status IN ('waiting_confirmation', 'confirmed')
+                  AND contextid != ''
+                ORDER BY id DESC
+                """
+            ).fetchall()
+            known_identities = set(latest_submissions)
+            known_assets = set(latest_submissions_by_asset)
+            for history in history_rows:
+                identity = int(
+                    history["listing_record_id"] or -history["id"]
+                )
+                asset_key = (
+                    int(history["appid"]),
+                    str(history["contextid"]),
+                    str(history["assetid"]),
+                )
+                if identity in known_identities or asset_key in known_assets:
+                    continue
+                known_identities.add(identity)
+                known_assets.add(asset_key)
+                profile = (
+                    profiles.get(history["strategy_profile_id"])
+                    if history["strategy_profile_id"] is not None
+                    else None
+                ) or default_profile
+                stage = min(int(history["new_stage"]), len(profile.stages) - 1)
+                metadata: dict[str, object] = {
+                    "id": -int(history["id"]),
+                    "listing_record_id": history["listing_record_id"],
+                    "assetid": history["assetid"],
+                    "appid": history["appid"],
+                    "contextid": history["contextid"],
+                    "market_hash_name": history["market_hash_name"],
+                    "strategy": profile.stages[stage].pricing_source.value,
+                    "strategy_profile_id": profile.id,
+                    "stage": stage,
+                    "seller_price_minor": history["new_seller_price_minor"],
+                    "buyer_price_minor": history["new_buyer_price_minor"],
+                    "requested_at": history["submitted_at"],
+                }
+                key = (
+                    int(history["appid"]),
+                    str(history["contextid"]),
+                    str(history["market_hash_name"]),
+                    int(history["new_buyer_price_minor"]),
+                )
+                local_groups[key].append(metadata)
+
+            for rows in local_groups.values():
+                rows.sort(key=lambda row: int(row["id"]))
+
+            # 手动下架后再次由程序上架时，Steam 可能已经使用了新的价格。
+            # 这类挂单不能只按当前价格分组，否则会被误判为外部挂单。
+            reassigned_remote_groups: dict[
+                tuple[int, str, str, int], list[dict[str, object]]
+            ] = defaultdict(list)
+            for current_key, rows in remote_groups.items():
+                for remote_row in rows:
+                    remote_assetid = str(remote_row.get("assetid") or "")
+                    asset_key = (
+                        current_key[0],
+                        current_key[1],
+                        remote_assetid,
+                    )
+                    submission = latest_submissions_by_asset.get(asset_key)
+                    if submission is not None:
+                        submission_key = (
+                            int(submission["appid"]),
+                            str(submission["contextid"]),
+                            str(submission["market_hash_name"]),
+                            int(submission["buyer_price_minor"]),
+                        )
+                        if submission_key != current_key and local_groups.get(
+                            submission_key
+                        ):
+                            reassigned_remote_groups[submission_key].append(
+                                remote_row
+                            )
+                            continue
+                    reassigned_remote_groups[current_key].append(remote_row)
+            remote_groups = reassigned_remote_groups
+
+            listing_rows = db.execute("SELECT * FROM listings ORDER BY id").fetchall()
+            listings_by_id = {int(row["id"]): row for row in listing_rows}
+            unique_open_rows = [
+                row
+                for row in listing_rows
+                if row["state"]
+                in {
+                    ListingState.PLANNED.value,
+                    ListingState.PRICE_REVIEW.value,
+                    ListingState.PENDING_CONFIRMATION.value,
+                    ListingState.ACTIVE.value,
+                }
+            ]
+            open_listings_by_asset = {
+                (
+                    int(row["appid"]),
+                    str(row["contextid"]),
+                    str(row["assetid"]),
+                ): row
+                for row in unique_open_rows
+            }
+            open_rows = [
+                row
+                for row in listing_rows
+                if row["state"]
+                in {
+                    ListingState.PENDING_CONFIRMATION.value,
+                    ListingState.ACTIVE.value,
+                }
+            ]
+            external_groups: dict[
+                tuple[int, str, str, int], list[sqlite3.Row]
+            ] = defaultdict(list)
+            for row in open_rows:
+                if (
+                    row["price_source"] == "external"
+                    or row["sync_status"] == ListingSyncStatus.EXTERNAL.value
+                ):
+                    key = (
+                        int(row["appid"]),
+                        str(row["contextid"]),
+                        str(row["market_hash_name"]),
+                        int(row["buyer_price_minor"]),
+                    )
+                    external_groups[key].append(row)
+
+            handled_listing_ids: set[int] = set()
+            all_keys = set(remote_groups) | set(local_groups) | set(external_groups)
+            for key in sorted(all_keys):
+                appid, contextid, market_hash_name, buyer_price = key
+                steam_rows = remote_groups.get(key, [])
+                local_rows = local_groups.get(key, [])
+                local_count = len(local_rows)
+                steam_count = len(steam_rows)
+                exact_asset_matching = bool(steam_rows) and all(
+                    str(row.get("assetid") or "") for row in steam_rows
+                )
+                if exact_asset_matching:
+                    remote_by_asset = {
+                        str(row["assetid"]): row for row in steam_rows
+                    }
+                    matched_pairs = [
+                        (metadata, remote_by_asset[str(metadata["assetid"])])
+                        for metadata in local_rows
+                        if str(metadata["assetid"]) in remote_by_asset
+                    ]
+                    matched_remote_ids = {
+                        str(remote_row["listing_id"])
+                        for _metadata, remote_row in matched_pairs
+                    }
+                    unmatched_remote_rows = [
+                        row
+                        for row in steam_rows
+                        if str(row["listing_id"]) not in matched_remote_ids
+                    ]
+                    matched_count = len(matched_pairs)
+                    pending_count = 0
+                    external_count = len(unmatched_remote_rows)
+                else:
+                    matched_count = min(local_count, steam_count)
+                    pending_count = max(local_count - steam_count, 0)
+                    external_count = max(steam_count - local_count, 0)
+                    matched_pairs = list(
+                        zip(local_rows[:matched_count], steam_rows[:matched_count])
+                    )
+                    unmatched_remote_rows = steam_rows[matched_count:]
+                mismatch_message = None
+                if steam_count > local_count:
+                    mismatch_message = (
+                        f"数量不一致：本地提交 {local_count}，"
+                        f"Steam 在售 {steam_count}，已匹配 {matched_count}，"
+                        f"待匹配 {pending_count}，外部 {external_count}"
+                    )
+
+                for metadata, remote_row in matched_pairs:
+                    is_matched = True
+                    actual_buyer_price = (
+                        buyer_price_for(remote_row) if remote_row else buyer_price
+                    )
+                    listing_record_id = metadata["listing_record_id"]
+                    existing = (
+                        listings_by_id.get(int(listing_record_id))
+                        if listing_record_id is not None
+                        else None
+                    )
+                    existing_open = open_listings_by_asset.get(
+                        (
+                            int(metadata["appid"]),
+                            str(metadata["contextid"]),
+                            str(metadata["assetid"]),
+                        )
+                    )
+                    if existing_open is not None and (
+                        existing is None
+                        or int(existing["id"]) != int(existing_open["id"])
+                    ):
+                        existing = existing_open
+                    profile = (
+                        profiles.get(metadata["strategy_profile_id"])
+                        if metadata["strategy_profile_id"] is not None
+                        else None
+                    ) or default_profile
+                    stage = min(int(metadata["stage"]), len(profile.stages) - 1)
+                    requested_at = str(metadata["requested_at"])
+                    try:
+                        active_since = datetime.fromisoformat(requested_at)
+                        if active_since.tzinfo is None:
+                            active_since = active_since.replace(tzinfo=UTC)
+                        active_since = active_since.astimezone(UTC)
+                    except ValueError:
+                        active_since = now
+                    next_action = active_since + timedelta(
+                        hours=profile.stages[stage].duration_hours
+                    )
+                    state = (
+                        ListingState.ACTIVE.value
+                        if is_matched
+                        else ListingState.PENDING_CONFIRMATION.value
+                    )
+                    sync_status = (
+                        ListingSyncStatus.MATCHED.value
+                        if is_matched
+                        else ListingSyncStatus.PENDING_MATCH.value
+                    )
+                    steam_listing_id = (
+                        str(remote_row.get("listing_id") or "") or None
+                        if remote_row
+                        else None
+                    )
+                    steam_listed_at = (
+                        str(remote_row.get("listed_at") or "") or None
+                        if remote_row
+                        else None
+                    )
+                    if existing:
+                        db.execute(
+                            """
+                            UPDATE listings SET
+                                state = ?, strategy = ?, strategy_profile_id = ?,
+                                stage = ?, seller_price_minor = ?,
+                                buyer_price_minor = ?, steam_listing_id = ?,
+                                steam_listed_at = ?, listing_requested_at = ?,
+                                active_since = ?, next_action_at = ?,
+                                price_source = 'strategy', sync_status = ?,
+                                error_message = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                state,
+                                metadata["strategy"],
+                                profile.id,
+                                stage,
+                                int(metadata["seller_price_minor"]),
+                                actual_buyer_price,
+                                steam_listing_id,
+                                steam_listed_at,
+                                requested_at,
+                                active_since.isoformat() if is_matched else None,
+                                next_action.isoformat() if is_matched else None,
+                                sync_status,
+                                mismatch_message,
+                                now_text,
+                                existing["id"],
+                            ),
+                        )
+                        actual_listing_id = int(existing["id"])
+                    else:
+                        cursor = db.execute(
+                            """
+                            INSERT INTO listings(
+                                assetid, appid, contextid, market_hash_name,
+                                state, strategy, strategy_profile_id, stage,
+                                seller_price_minor, buyer_price_minor,
+                                minimum_buyer_price_minor, steam_listing_id,
+                                steam_listed_at, listing_requested_at,
+                                active_since, next_action_at, price_source,
+                                sync_status, error_message, created_at, updated_at
+                            ) VALUES (
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, 'strategy', ?, ?, ?, ?
+                            )
+                            """,
+                            (
+                                metadata["assetid"],
+                                appid,
+                                contextid,
+                                market_hash_name,
+                                state,
+                                metadata["strategy"],
+                                profile.id,
+                                stage,
+                                int(metadata["seller_price_minor"]),
+                                actual_buyer_price,
+                                minimum_buyer_price,
+                                steam_listing_id,
+                                steam_listed_at,
+                                requested_at,
+                                active_since.isoformat() if is_matched else None,
+                                next_action.isoformat() if is_matched else None,
+                                sync_status,
+                                mismatch_message,
+                                now_text,
+                                now_text,
+                            ),
+                        )
+                        actual_listing_id = int(cursor.lastrowid)
+                    handled_listing_ids.add(actual_listing_id)
+
+                    if int(metadata["id"]) > 0:
+                        db.execute(
+                            """
+                            UPDATE listing_submissions
+                            SET listing_record_id = ?, status = ?,
+                                error_message = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                actual_listing_id,
+                                "active" if is_matched else "submitted",
+                                mismatch_message,
+                                now_text,
+                                metadata["id"],
+                            ),
+                        )
+                    changed += 1
+
+                histories = db.execute(
+                    """
+                    SELECT id FROM reprice_history
+                    WHERE status = 'waiting_confirmation'
+                      AND appid = ? AND contextid = ?
+                      AND market_hash_name = ?
+                      AND new_buyer_price_minor = ?
+                    ORDER BY submitted_at, id
+                    LIMIT ?
+                    """,
+                    (
+                        appid,
+                        contextid,
+                        market_hash_name,
+                        buyer_price,
+                        matched_count,
+                    ),
+                ).fetchall()
+                for history in histories:
+                    db.execute(
+                        """
+                        UPDATE reprice_history
+                        SET status = 'confirmed', confirmed_at = ?,
+                            error_message = NULL
+                        WHERE id = ?
+                        """,
+                        (now_text, history["id"]),
+                    )
+
+                reusable_external = external_groups.get(key, [])
+                for index in range(external_count):
+                    remote_row = unmatched_remote_rows[index]
+                    steam_listing_id = (
+                        str(remote_row.get("listing_id") or "") or None
+                    )
+                    steam_listed_at = (
+                        str(remote_row.get("listed_at") or "") or None
+                    )
                     seller_price = seller_receive_for_buyer_pay(
                         buyer_price, **fee_values
                     )
-                history = db.execute(
-                    """
-                    SELECT new_stage, strategy_profile_id
-                    FROM reprice_history
-                    WHERE appid = ? AND market_hash_name = ? AND assetid = ?
-                      AND new_buyer_price_minor = ?
-                      AND status IN ('confirmed', 'waiting_confirmation')
-                    ORDER BY COALESCE(confirmed_at, submitted_at) DESC
-                    LIMIT 1
-                    """,
-                    (appid, market_hash_name, assetid, buyer_price),
-                ).fetchone()
-                active_profile = (
-                    profiles.get(history["strategy_profile_id"])
-                    if history and history["strategy_profile_id"] is not None
-                    else None
-                ) or profile
-                stage_index = min(
-                    int(history["new_stage"]) if history else 0,
-                    len(active_profile.stages) - 1,
+                    if index < len(reusable_external):
+                        existing = reusable_external[index]
+                        db.execute(
+                            """
+                            UPDATE listings SET
+                                state = 'active', seller_price_minor = ?,
+                                buyer_price_minor = ?, steam_listing_id = ?,
+                                steam_listed_at = ?, active_since = NULL,
+                                next_action_at = NULL, price_source = 'external',
+                                sync_status = 'external', error_message = ?,
+                                updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                seller_price,
+                                buyer_price,
+                                steam_listing_id,
+                                steam_listed_at,
+                                mismatch_message,
+                                now_text,
+                                existing["id"],
+                            ),
+                        )
+                        handled_listing_ids.add(int(existing["id"]))
+                    else:
+                        digest = hashlib.sha256(
+                            repr((*key, index)).encode("utf-8")
+                        ).hexdigest()[:20]
+                        cursor = db.execute(
+                            """
+                            INSERT INTO listings(
+                                assetid, appid, contextid, market_hash_name,
+                                state, strategy, strategy_profile_id, stage,
+                                seller_price_minor, buyer_price_minor,
+                                minimum_buyer_price_minor, steam_listing_id,
+                                steam_listed_at, price_source, sync_status,
+                                error_message, created_at, updated_at
+                            ) VALUES (
+                                ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, ?, ?,
+                                'external', 'external', ?, ?, ?
+                            )
+                            """,
+                            (
+                                f"external-group:{digest}",
+                                appid,
+                                contextid,
+                                market_hash_name,
+                                default_profile.stages[0].pricing_source.value,
+                                default_profile.id,
+                                seller_price,
+                                buyer_price,
+                                minimum_buyer_price,
+                                steam_listing_id,
+                                steam_listed_at,
+                                mismatch_message,
+                                now_text,
+                                now_text,
+                            ),
+                        )
+                        handled_listing_ids.add(int(cursor.lastrowid))
+                    changed += 1
+
+            for row in open_rows:
+                listing_id = int(row["id"])
+                if listing_id in handled_listing_ids:
+                    continue
+                asset_key = (
+                    int(row["appid"]),
+                    str(row["contextid"]),
+                    str(row["assetid"]),
                 )
-                active_stage = active_profile.stages[stage_index]
-                listed_at = str(item.get("listed_at") or "")
-                try:
-                    listed_datetime = datetime.fromisoformat(listed_at)
-                    if listed_datetime.tzinfo is None:
-                        listed_datetime = listed_datetime.replace(tzinfo=UTC)
-                    listed_datetime = listed_datetime.astimezone(UTC)
-                except ValueError:
-                    listed_datetime = now
-                next_action = listed_datetime + timedelta(
-                    hours=active_stage.duration_hours
-                )
-                if existing:
+                if (
+                    row["state"] == ListingState.PENDING_CONFIRMATION.value
+                    and asset_key in (protected_pending_asset_keys or set())
+                ):
+                    continue
+                if (
+                    row["price_source"] == "external"
+                    or row["sync_status"] == ListingSyncStatus.EXTERNAL.value
+                ):
                     db.execute(
                         """
-                        UPDATE listings SET
-                            state = ?,
-                            assetid = CASE WHEN ? != '' THEN ? ELSE assetid END,
-                            appid = CASE WHEN ? != 0 THEN ? ELSE appid END,
-                            contextid = CASE WHEN ? != '' THEN ? ELSE contextid END,
-                            market_hash_name = CASE WHEN ? != '' THEN ? ELSE market_hash_name END,
-                            seller_price_minor = ?,
-                            buyer_price_minor = ?,
-                            steam_listing_id = ?,
-                            steam_listed_at = CASE WHEN ? != '' THEN ? ELSE steam_listed_at END,
-                            active_since = COALESCE(active_since, ?),
-                            next_action_at = ?,
+                        UPDATE listings
+                        SET state = 'cancelled', steam_listing_id = NULL,
+                            error_message = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (now_text, listing_id),
+                    )
+                else:
+                    db.execute(
+                        """
+                        UPDATE listings
+                        SET state = 'cancelled',
+                            steam_listing_id = NULL, steam_listed_at = NULL,
+                            active_since = NULL, next_action_at = NULL,
+                            sync_status = 'pending_match',
                             error_message = NULL,
                             updated_at = ?
                         WHERE id = ?
                         """,
-                        (
-                            ListingState.ACTIVE.value,
-                            remote_assetid,
-                            remote_assetid,
-                            appid,
-                            appid,
-                            remote_contextid,
-                            remote_contextid,
-                            remote_name,
-                            remote_name,
-                            seller_price,
-                            max(buyer_price, seller_price),
-                            steam_listing_id,
-                            str(item.get("listed_at") or ""),
-                            str(item.get("listed_at") or ""),
-                            listed_datetime.isoformat(),
-                            next_action.isoformat(),
-                            utc_now(),
-                            existing["id"],
-                        ),
+                        (now_text, listing_id),
                     )
-                    continue
-                try:
                     db.execute(
                         """
-                        INSERT INTO listings(
-                            assetid, appid, contextid, market_hash_name, state,
-                            strategy, strategy_profile_id, stage,
-                            seller_price_minor, buyer_price_minor,
-                            minimum_buyer_price_minor, steam_listing_id,
-                            steam_listed_at, active_since, next_action_at,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        UPDATE listing_submissions
+                        SET status = 'sold', error_message = NULL, updated_at = ?
+                        WHERE listing_record_id = ?
+                          AND status IN ('requested', 'submitted', 'active')
                         """,
-                        (
-                            assetid,
-                            appid,
-                            contextid,
-                            market_hash_name,
-                            ListingState.ACTIVE.value,
-                            active_stage.pricing_source.value,
-                            active_profile.id,
-                            stage_index,
-                            seller_price,
-                            max(buyer_price, seller_price),
-                            minimum_buyer_price,
-                            steam_listing_id,
-                            listed_at or None,
-                            listed_datetime.isoformat(),
-                            next_action.isoformat(),
-                            now.isoformat(),
-                            now.isoformat(),
-                        ),
+                        (now_text, listing_id),
                     )
-                except sqlite3.IntegrityError:
-                    continue
-                imported += 1
-        return imported
+                changed += 1
+        return changed
+
+    def create_listing_submission(
+        self, record: ListingRecord, requested_at: datetime
+    ) -> int:
+        timestamp = requested_at.astimezone(UTC).isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO listing_submissions(
+                    listing_record_id, assetid, appid, contextid,
+                    market_hash_name, strategy, strategy_profile_id, stage,
+                    seller_price_minor, buyer_price_minor, requested_at,
+                    status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?)
+                """,
+                (
+                    record.id,
+                    record.assetid,
+                    record.appid,
+                    record.contextid,
+                    record.market_hash_name,
+                    record.strategy.value,
+                    record.strategy_profile_id,
+                    record.stage,
+                    record.seller_price_minor,
+                    record.buyer_price_minor,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_listing_submission(
+        self,
+        submission_id: int,
+        *,
+        steam_listing_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        status = "failed" if error_message else "submitted"
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE listing_submissions
+                SET steam_listing_id = ?, status = ?, error_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    steam_listing_id,
+                    status,
+                    error_message,
+                    utc_now(),
+                    submission_id,
+                ),
+            )
 
     def listings(self, states: list[ListingState] | None = None) -> list[ListingRecord]:
         params: list[str] = []
@@ -837,6 +1391,7 @@ class Database:
             "minimum_buyer_price_minor",
             "steam_listing_id",
             "steam_listed_at",
+            "listing_requested_at",
             "error_message",
             "price_source",
             "strategy_seller_price_minor",
@@ -845,6 +1400,7 @@ class Database:
             "price_difference_percent",
             "active_since",
             "next_action_at",
+            "sync_status",
         }
         unknown = set(fields) - allowed
         if unknown:
@@ -888,17 +1444,19 @@ class Database:
             cursor = db.execute(
                 """
                 INSERT INTO reprice_history(
-                    batch_id, listing_record_id, appid, market_hash_name, assetid,
+                    batch_id, listing_record_id, appid, contextid,
+                    market_hash_name, assetid,
                     old_steam_listing_id, old_seller_price_minor,
                     old_buyer_price_minor, new_seller_price_minor,
                     new_buyer_price_minor, new_stage, strategy_profile_id,
                     reason, status, submitted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?)
                 """,
                 (
                     batch_id,
                     listing_record_id,
                     record.appid,
+                    record.contextid,
                     record.market_hash_name,
                     record.assetid,
                     record.steam_listing_id,
@@ -925,77 +1483,58 @@ class Database:
                 (error, listing_record_id),
             )
 
-    def confirm_reprice_history(
-        self, listing_record_id: int, new_steam_listing_id: str
-    ) -> None:
+    def confirm_reprice_history(self, listing_record_id: int) -> None:
         with self.connect() as db:
             db.execute(
                 """
                 UPDATE reprice_history
-                SET status = 'confirmed', new_steam_listing_id = ?,
-                    confirmed_at = ?, error_message = NULL
+                SET status = 'confirmed', confirmed_at = ?,
+                    error_message = NULL
                 WHERE listing_record_id = ? AND status = 'waiting_confirmation'
                 """,
-                (new_steam_listing_id, utc_now(), listing_record_id),
+                (utc_now(), listing_record_id),
+            )
+
+    def mark_reprice_history_sold(self, listing_record_id: int) -> None:
+        """挂单在首次 active 同步前售出时，结束等待确认的调价历史。"""
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE reprice_history
+                SET status = 'sold', confirmed_at = ?,
+                    error_message = NULL
+                WHERE listing_record_id = ? AND status = 'waiting_confirmation'
+                """,
+                (utc_now(), listing_record_id),
             )
 
     def reconcile_pending_reprices(self) -> int:
-        """在重启后用当前 active 挂单确认尚未完成的调价历史。"""
-        confirmed = 0
-        with self.connect() as db:
-            pending = db.execute(
-                """
-                SELECT * FROM reprice_history
-                WHERE status = 'waiting_confirmation'
-                ORDER BY submitted_at
-                """
-            ).fetchall()
-            for history in pending:
-                match = db.execute(
-                    """
-                    SELECT steam_listing_id FROM listings
-                    WHERE state = 'active'
-                      AND appid = ? AND market_hash_name = ? AND assetid = ?
-                      AND buyer_price_minor = ?
-                      AND steam_listing_id IS NOT NULL
-                    ORDER BY id DESC LIMIT 1
-                    """,
-                    (
-                        history["appid"],
-                        history["market_hash_name"],
-                        history["assetid"],
-                        history["new_buyer_price_minor"],
-                    ),
-                ).fetchone()
-                if not match:
-                    continue
-                db.execute(
-                    """
-                    UPDATE reprice_history
-                    SET status = 'confirmed', new_steam_listing_id = ?,
-                        confirmed_at = ?, error_message = NULL
-                    WHERE id = ?
-                    """,
-                    (match["steam_listing_id"], utc_now(), history["id"]),
-                )
-                confirmed += 1
-        return confirmed
+        """兼容旧调用；调价确认已经由分组数量同步完成。"""
+        return 0
 
     def latest_active_age_reprice(
-        self, appid: int, market_hash_name: str
+        self, appid: int, contextid: str, market_hash_name: str
     ) -> RepriceHistory | None:
         with self.connect() as db:
             latest = db.execute(
                 """
                 SELECT batch_id FROM reprice_history
-                WHERE appid = ? AND market_hash_name = ?
+                WHERE appid = ? AND contextid = ? AND market_hash_name = ?
                   AND reason = 'age_timeout' AND status = 'confirmed'
-                  AND new_steam_listing_id IN (
-                    SELECT steam_listing_id FROM listings WHERE state = 'active'
+                  AND EXISTS (
+                    SELECT 1 FROM listings
+                    WHERE listings.state = 'active'
+                      AND listings.sync_status = 'matched'
+                      AND listings.appid = reprice_history.appid
+                      AND listings.contextid = reprice_history.contextid
+                      AND listings.market_hash_name =
+                          reprice_history.market_hash_name
+                      AND listings.buyer_price_minor =
+                          reprice_history.new_buyer_price_minor
                   )
                 ORDER BY confirmed_at DESC LIMIT 1
                 """,
-                (appid, market_hash_name),
+                (appid, contextid, market_hash_name),
             ).fetchone()
             if not latest:
                 return None
@@ -1003,12 +1542,21 @@ class Database:
                 """
                 SELECT * FROM reprice_history
                 WHERE batch_id = ? AND status = 'confirmed'
-                  AND new_steam_listing_id IN (
-                    SELECT steam_listing_id FROM listings WHERE state = 'active'
+                  AND appid = ? AND contextid = ? AND market_hash_name = ?
+                  AND EXISTS (
+                    SELECT 1 FROM listings
+                    WHERE listings.state = 'active'
+                      AND listings.sync_status = 'matched'
+                      AND listings.appid = reprice_history.appid
+                      AND listings.contextid = reprice_history.contextid
+                      AND listings.market_hash_name =
+                          reprice_history.market_hash_name
+                      AND listings.buyer_price_minor =
+                          reprice_history.new_buyer_price_minor
                   )
                 ORDER BY new_buyer_price_minor ASC LIMIT 1
                 """,
-                (latest["batch_id"],),
+                (latest["batch_id"], appid, contextid, market_hash_name),
             ).fetchone()
         return RepriceHistory.model_validate(dict(row)) if row else None
 

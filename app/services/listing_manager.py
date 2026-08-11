@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from playwright.async_api import Error as PlaywrightError
 
@@ -14,6 +14,7 @@ from app.core.models import (
     FullRunResult,
     ListingRecord,
     ListingState,
+    ListingSyncStatus,
     PricePoint,
     PricingStrategy,
     StageAction,
@@ -23,13 +24,15 @@ from app.core.models import (
 from app.services.pricing import (
     buyer_pays_for_seller_receive,
     calculate_price,
-    listing_price_at_least,
-    listing_price_at_most,
     seller_receive_for_buyer_pay,
 )
 from app.services.steam_market import SteamMarketService, steam_market_service
 
 EXECUTE_CONFIRMATION = "我确认执行真实市场操作"
+LEGACY_TIME_REFERENCE_WARNINGS = {
+    "挂单缺少 Steam Listing ID，已按名称匹配并使用 Steam 上架时间",
+    "缺少本地上架请求时间，已使用 Steam 上架时间",
+}
 
 
 def _as_points(
@@ -56,6 +59,40 @@ class ListingManager:
         self.store = store or database
         self.market = market or steam_market_service
         self._full_run_lock = asyncio.Lock()
+        self._pending_confirmation_asset_keys: set[tuple[int, str, str]] = set()
+        self._repricing_asset_keys: set[tuple[int, str, str]] = set()
+
+    @staticmethod
+    def asset_key(record: ListingRecord | dict[str, object]) -> tuple[int, str, str]:
+        if isinstance(record, ListingRecord):
+            return record.appid, record.contextid, record.assetid
+        return (
+            int(record["appid"]),
+            str(record["contextid"]),
+            str(record["assetid"]),
+        )
+
+    def select_full_run_assets(
+        self, marketable_assets: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], int, int]:
+        repricing_keys = {
+            self.asset_key(asset)
+            for asset in marketable_assets
+            if self.asset_key(asset) in self._repricing_asset_keys
+        }
+        pending_keys = {
+            self.asset_key(asset)
+            for asset in marketable_assets
+            if self.asset_key(asset) in self._pending_confirmation_asset_keys
+            and self.asset_key(asset) not in repricing_keys
+        }
+        blocked_keys = repricing_keys | pending_keys
+        eligible = [
+            asset
+            for asset in marketable_assets
+            if self.asset_key(asset) not in blocked_keys
+        ]
+        return eligible, len(pending_keys), len(repricing_keys)
 
     def fee_options(self) -> dict[str, float | int]:
         session_service = getattr(self.market, "session", None)
@@ -109,8 +146,6 @@ class ListingManager:
             "forecast_hours": stage.forecast_hours,
             "recent_floor_percent": stage.recent_floor_percent,
             "long_floor_percent": stage.long_floor_percent,
-            "trend_robust_floor_percent": stage.trend_robust_floor_percent,
-            "fast_sell_floor_percent": stage.fast_sell_floor_percent,
             "minimum_price_points": stage.minimum_price_points,
         }
 
@@ -124,11 +159,11 @@ class ListingManager:
         current_buyer_price_minor: int | None = None,
     ) -> tuple[int, int]:
         pricing_options = self.pricing_options(stage)
-        fee_options = self.fee_options()
         decision = calculate_price(
             stage.pricing_source,
             points,
             current_lowest_minor=current_lowest_minor,
+            fee_options=self.fee_options(),
             pricing_options=pricing_options,
         )
         median_decision = calculate_price(
@@ -143,71 +178,36 @@ class ListingManager:
         median_floor = round(
             median_decision.price_minor * stage.median_floor_percent / 100
         )
-        minimum_buyer_pay = buyer_pays_for_seller_receive(1, **fee_options)
-        hard_floor = max(
-            minimum_buyer_pay,
+        fee_options = self.fee_options()
+        buyer_target = max(
+            1,
+            1 + int(fee_options.get("minimum_total_fee", 2)),
+            adjusted,
             minimum_buyer_price_minor,
             stage.absolute_floor_minor,
-        )
-        soft_floor = max(
             median_floor,
-            hard_floor,
         )
         if (
             current_buyer_price_minor is not None
             and stage.maximum_drop_percent is not None
         ):
-            soft_floor = max(
-                soft_floor,
+            buyer_target = max(
+                buyer_target,
                 round(
                     current_buyer_price_minor
                     * (1 - stage.maximum_drop_percent / 100)
                 ),
             )
-        ceilings = [
-            ceiling
-            for ceiling in (
-                current_buyer_price_minor,
-                (
-                    current_lowest_minor - 1
-                    if (
-                        current_lowest_minor is not None
-                        and current_lowest_minor > 2
-                        and decision.price_minor <= current_lowest_minor - 1
-                        and stage.pricing_source
-                        in {
-                            PricingStrategy.MARKET_FOLLOW,
-                            PricingStrategy.FAST_SELL,
-                        }
-                    )
-                    else None
-                ),
-            )
-            if ceiling is not None
-        ]
-        hard_ceiling = min(ceilings) if ceilings else None
-        if hard_ceiling is not None and soft_floor > hard_ceiling:
-            raise ValueError(
-                "价格上下限冲突：最低允许价格"
-                f" {soft_floor} 高于最高允许价格 {hard_ceiling}"
-            )
-        buyer_target = max(adjusted, soft_floor)
-        if hard_ceiling is not None:
-            buyer_target = min(buyer_target, hard_ceiling)
-            seller_price, buyer_price = listing_price_at_most(
-                buyer_target, **fee_options
-            )
-            if buyer_price < soft_floor:
-                seller_price, buyer_price = listing_price_at_least(
-                    soft_floor, **fee_options
-                )
-                if buyer_price > hard_ceiling:
-                    raise ValueError(
-                        "手续费离散价格无法同时满足最低价和最高价"
-                    )
-        else:
-            seller_price, buyer_price = listing_price_at_least(
-                buyer_target, **fee_options
+        seller_price = seller_receive_for_buyer_pay(
+            buyer_target, **fee_options
+        )
+        buyer_price = buyer_pays_for_seller_receive(
+            seller_price, **fee_options
+        )
+        while buyer_price < buyer_target:
+            seller_price += 1
+            buyer_price = buyer_pays_for_seller_receive(
+                seller_price, **fee_options
             )
         return seller_price, buyer_price
 
@@ -234,6 +234,7 @@ class ListingManager:
         *,
         strategy_profile_id: int | None = None,
         assetids: list[str] | None = None,
+        asset_keys: set[tuple[int, str, str]] | None = None,
         minimum_buyer_price_minor: int = 3,
         maximum_buyer_price_minor: int | None = None,
         maximum_items: int | None = None,
@@ -251,6 +252,13 @@ class ListingManager:
             asset
             for asset in self.store.inventory(marketable_only=True)
             if assetids is None or str(asset["assetid"]) in assetids
+            if asset_keys is None
+            or (
+                int(asset["appid"]),
+                str(asset["contextid"]),
+                str(asset["assetid"]),
+            )
+            in asset_keys
             if str(asset["market_hash_name"]).casefold() not in excluded
         ]
         selected = selected[: maximum_items or settings.max_batch_items]
@@ -292,7 +300,7 @@ class ListingManager:
             price_difference_percent = None
             state = ListingState.PLANNED
             reference = self.store.latest_active_age_reprice(
-                item_key[0], item_key[1]
+                item_key[0], str(asset["contextid"]), item_key[1]
             )
             if reference:
                 median_price = calculate_price(
@@ -373,7 +381,13 @@ class ListingManager:
             raise ValueError(f"没有可用的30天价格数据：{names}；请先成功同步价格")
         return [record for listing_id in created if (record := self.store.listing(listing_id))]
 
-    async def execute(self, listing_ids: list[int], confirmation_text: str) -> list[ListingRecord]:
+    async def execute(
+        self,
+        listing_ids: list[int],
+        confirmation_text: str,
+        progress: Callable[[str], None] | None = None,
+        success_action: str = "上架完成",
+    ) -> list[ListingRecord]:
         if confirmation_text != EXECUTE_CONFIRMATION:
             raise PermissionError("真实市场操作确认文本不匹配")
         if settings.dry_run or not settings.allow_market_writes:
@@ -383,6 +397,7 @@ class ListingManager:
             )
         results: list[ListingRecord] = []
         for listing_id in listing_ids:
+            submission_id: int | None = None
             record = self.store.listing(listing_id)
             if not record or record.state not in {
                 ListingState.PLANNED,
@@ -391,7 +406,7 @@ class ListingManager:
                 continue
             if record.price_source == "age_reprice_reference":
                 reference = self.store.latest_active_age_reprice(
-                    record.appid, record.market_hash_name
+                    record.appid, record.contextid, record.market_hash_name
                 )
                 if not reference:
                     if record.strategy_buyer_price_minor is not None:
@@ -444,6 +459,14 @@ class ListingManager:
                     )
                 record = self.store.listing(record.id) or record
             try:
+                listing_requested_at = datetime.now(UTC)
+                submission_id = self.store.create_listing_submission(
+                    record, listing_requested_at
+                )
+                self.store.update_listing(
+                    record.id,
+                    listing_requested_at=listing_requested_at.isoformat(),
+                )
                 payload = await self.market.create_listing(
                     record.appid,
                     record.contextid,
@@ -451,18 +474,34 @@ class ListingManager:
                     record.seller_price_minor,
                 )
                 steam_listing_id = payload.get("sell_listing_id") or payload.get("listingid")
+                self.store.finish_listing_submission(
+                    submission_id,
+                    steam_listing_id=(
+                        str(steam_listing_id) if steam_listing_id else None
+                    ),
+                )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PENDING_CONFIRMATION,
                     steam_listing_id=str(steam_listing_id) if steam_listing_id else None,
                     error_message=None,
                 )
+                self._pending_confirmation_asset_keys.add(self.asset_key(record))
                 self.store.audit(
                     "listing.submit",
                     record.assetid,
                     {"listing_id": record.id, "steam_listing_id": steam_listing_id},
                 )
+                if progress:
+                    progress(
+                        f"{success_action}：{record.market_hash_name}，"
+                        f"买家支付 {record.buyer_price_minor / 100:.2f}"
+                    )
             except (PermissionError, RuntimeError) as exc:
+                if submission_id is not None:
+                    self.store.finish_listing_submission(
+                        submission_id, error_message=str(exc)
+                    )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.FAILED,
@@ -474,6 +513,48 @@ class ListingManager:
             if updated:
                 results.append(updated)
         return results
+
+    def set_custom_price(
+        self, listing_ids: list[int], custom_buyer_price_minor: int
+    ) -> list[ListingRecord]:
+        if custom_buyer_price_minor > settings.max_unit_buyer_price_minor:
+            raise ValueError("自定义价格超过单件支付上限")
+        records = [
+            record
+            for listing_id in listing_ids
+            if (record := self.store.listing(listing_id))
+            and record.state in {ListingState.PLANNED, ListingState.FAILED}
+        ]
+        if not records:
+            raise ValueError("没有可设置自定义价格的新上架任务")
+        minimum_fee_price = 1 + int(
+            self.fee_options().get("minimum_total_fee", 2)
+        )
+        for record in records:
+            minimum = max(record.minimum_buyer_price_minor, minimum_fee_price)
+            if custom_buyer_price_minor < minimum:
+                raise ValueError(
+                    f"{record.market_hash_name} 的自定义价格低于最低上架价"
+                )
+
+        updated: list[ListingRecord] = []
+        for record in records:
+            seller_price = seller_receive_for_buyer_pay(
+                custom_buyer_price_minor, **self.fee_options()
+            )
+            self.store.update_listing(
+                record.id,
+                seller_price_minor=seller_price,
+                buyer_price_minor=buyer_pays_for_seller_receive(
+                    seller_price, **self.fee_options()
+                ),
+                price_source="custom",
+                error_message=None,
+                state=ListingState.PLANNED,
+            )
+            if refreshed := self.store.listing(record.id):
+                updated.append(refreshed)
+        return updated
 
     def resolve_price_review(
         self,
@@ -632,6 +713,7 @@ class ListingManager:
                     reason="manual",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
+                self._repricing_asset_keys.add(self.asset_key(record))
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PLANNED,
@@ -646,7 +728,7 @@ class ListingManager:
                     error_message=None,
                 )
                 resubmit_ids.append(record.id)
-            except (PermissionError, RuntimeError, ValueError) as exc:
+            except (PermissionError, RuntimeError) as exc:
                 self.store.update_listing(record.id, error_message=str(exc))
                 self.store.fail_reprice_history(record.id, str(exc))
         if resubmit_ids:
@@ -658,71 +740,30 @@ class ListingManager:
         ]
 
     async def sync_states(self) -> SyncResult:
+        """按四字段分组数量同步，不按挂单、资产或日期匹配。"""
         remote = await self.market.active_listings()
-        recent_sales = await self.market.recent_sales()
-        imported = self.store.import_active_listings(remote, self.fee_options())
-        reconciled = self.store.reconcile_pending_reprices()
-        by_id = {str(item["listing_id"]): item for item in remote}
-        unmatched = list(remote)
-        updated = imported + reconciled
-        open_records = self.store.listings(
-            [ListingState.PENDING_CONFIRMATION, ListingState.ACTIVE]
+        updated = self.store.sync_active_listing_groups(
+            remote,
+            self.fee_options(),
+            self._pending_confirmation_asset_keys,
         )
-        now = datetime.now(UTC)
-        for record in open_records:
-            _profile_id, stages = self.stages(
-                record.strategy_profile_id, record.strategy
-            )
-            match = by_id.get(record.steam_listing_id or "")
-            if match is None and record.state is ListingState.PENDING_CONFIRMATION:
-                match = next(
-                    (
-                        item
-                        for item in unmatched
-                        if item["market_hash_name"] == record.market_hash_name
-                    ),
-                    None,
-                )
-            if match and record.state is ListingState.PENDING_CONFIRMATION:
-                stage = stages[min(record.stage, len(stages) - 1)]
-                next_action = now + timedelta(hours=stage.duration_hours)
-                self.store.update_listing(
-                    record.id,
-                    state=ListingState.ACTIVE,
-                    steam_listing_id=str(match["listing_id"]),
-                    active_since=now.isoformat(),
-                    next_action_at=next_action.isoformat(),
-                )
-                self.store.confirm_reprice_history(
-                    record.id, str(match["listing_id"])
-                )
-                if match in unmatched:
-                    unmatched.remove(match)
-                updated += 1
-            elif not match and record.state is ListingState.ACTIVE:
-                state = (
-                    ListingState.SOLD
-                    if record.market_hash_name in recent_sales
-                    else ListingState.PAUSED
-                )
-                self.store.update_listing(
-                    record.id,
-                    state=state,
-                    steam_listing_id=None,
-                    active_since=None,
-                    next_action_at=None,
-                )
-                updated += 1
         return SyncResult(listings_updated=updated)
 
     async def refresh_current_listings(self) -> SyncResult:
         """在空缓存中重新获取 Steam 当前在售，不读取任何上次运行记录。"""
         remote = await self.market.active_listings()
-        imported = self.store.import_active_listings(remote, self.fee_options())
-        reconciled = self.store.reconcile_pending_reprices()
-        return SyncResult(listings_updated=imported + reconciled)
+        updated = self.store.sync_active_listing_groups(
+            remote,
+            self.fee_options(),
+            self._pending_confirmation_asset_keys,
+        )
+        return SyncResult(listings_updated=updated)
 
-    async def process_expired(self, currency: Currency) -> int:
+    async def process_expired(
+        self,
+        currency: Currency,
+        progress: Callable[[str], None] | None = None,
+    ) -> int:
         now = datetime.now(UTC)
         processed = 0
         resubmit_ids: list[int] = []
@@ -795,6 +836,13 @@ class ListingManager:
                     reason="age_timeout",
                 )
                 await self.market.cancel_listing(record.steam_listing_id)
+                self._repricing_asset_keys.add(self.asset_key(record))
+                if progress:
+                    progress(
+                        f"[2/4] 调价下架完成：{record.market_hash_name}，"
+                        f"原价 {record.buyer_price_minor / 100:.2f}，"
+                        f"目标价 {buyer_price / 100:.2f}"
+                    )
                 self.store.update_listing(
                     record.id,
                     state=ListingState.PLANNED,
@@ -824,7 +872,12 @@ class ListingManager:
                 self.store.update_listing(record.id, error_message=str(exc))
                 continue
         if resubmit_ids and settings.allow_market_writes and not settings.dry_run:
-            await self.execute(resubmit_ids, EXECUTE_CONFIRMATION)
+            await self.execute(
+                resubmit_ids,
+                EXECUTE_CONFIRMATION,
+                progress=progress,
+                success_action="[2/4] 调价重新上架完成",
+            )
         return processed
 
     async def full_run(
@@ -840,6 +893,8 @@ class ListingManager:
     ) -> FullRunResult:
         """执行一次完整同步、超时处理、计划生成和批量提交。"""
         result = FullRunResult()
+        self._pending_confirmation_asset_keys.clear()
+        self._repricing_asset_keys.clear()
         currency = self.store.settings().currency
         report = progress or (lambda _message: None)
         report("[1/4] 开始同步库存")
@@ -872,27 +927,50 @@ class ListingManager:
             report(f"[1/4] 挂单同步失败：{exc}")
         report("[2/4] 开始检查全部非黑名单超时挂单")
         try:
-            result.expired_processed = await self.process_expired(currency)
+            result.expired_processed = await self.process_expired(
+                currency, progress=report
+            )
             report(
                 f"[2/4] 超时检查完成：处理 {result.expired_processed} 条挂单"
             )
             for record in self.store.listings([ListingState.ACTIVE]):
-                if record.error_message:
-                    result.errors.append(
-                        f"超时挂单处理失败：{record.market_hash_name}："
-                        f"{record.error_message}"
-                    )
+                if (
+                    record.error_message
+                    and record.sync_status is not ListingSyncStatus.EXTERNAL
+                ):
+                    message = f"{record.market_hash_name}：{record.error_message}"
+                    if record.error_message in LEGACY_TIME_REFERENCE_WARNINGS:
+                        result.warnings.append(message)
+                        report(f"[2/4] 时间基准警告：{message}")
+                    else:
+                        result.errors.append(f"超时挂单处理失败：{message}")
         except (OSError, PlaywrightError, PermissionError, RuntimeError) as exc:
             result.errors.append(f"超时处理失败：{exc}")
             report(f"[2/4] 超时处理失败：{exc}")
 
-        assetids = [
-            str(asset["assetid"])
-            for asset in self.store.inventory(marketable_only=True)
-        ]
+        marketable_assets = self.store.inventory(marketable_only=True)
+        eligible_assets, skipped_pending, skipped_repricing = (
+            self.select_full_run_assets(marketable_assets)
+        )
+        asset_keys = {
+            (
+                int(asset["appid"]),
+                str(asset["contextid"]),
+                str(asset["assetid"]),
+            )
+            for asset in eligible_assets
+        }
+        assetids = [str(asset["assetid"]) for asset in eligible_assets]
+        report(
+            f"[3/4] 非黑名单可出售 {len(marketable_assets)} 件，"
+            f"本次等待手机确认跳过 {skipped_pending} 件，"
+            f"调价临时下架跳过 {skipped_repricing} 件，"
+            f"实际待生成计划 {len(eligible_assets)} 件"
+        )
         report(
             f"[3/4] 开始同步 {len(assetids)} 件可出售库存的30天价格并生成计划"
         )
+        price_sync_failed = False
         if assetids:
             try:
                 prices = await self.market.sync_selected_prices(
@@ -902,32 +980,64 @@ class ListingManager:
                 report(
                     f"[3/4] 价格同步完成：更新 {result.price_items_updated} 种饰品"
                 )
-                result.errors.extend(
-                    f"价格同步：{error}" for error in prices.errors
-                )
-                profile = self.store.strategy_profile()
-                plans = await self.create_plans(
-                    profile.stages[0].pricing_source,
-                    currency,
-                    strategy_profile_id=profile.id,
-                    assetids=assetids,
-                    maximum_items=len(assetids),
-                )
-                result.plans_created = len(plans)
-                result.price_reviews = sum(
-                    plan.state is ListingState.PRICE_REVIEW for plan in plans
-                )
-                report(
-                    f"[3/4] 计划生成完成：正常/总计 "
-                    f"{result.plans_created - result.price_reviews}/"
-                    f"{result.plans_created}，异常价格 {result.price_reviews} 条"
-                )
-                for plan in plans:
-                    if plan.state is ListingState.PRICE_REVIEW:
-                        result.errors.append(
-                            f"异常价格待确认：{plan.market_hash_name}，"
-                            f"上架价 {plan.buyer_price_minor / 100:.2f}"
+                if prices.errors:
+                    price_sync_failed = True
+                    result.errors.extend(
+                        f"价格同步：{error}" for error in prices.errors
+                    )
+                    report(
+                        f"[3/4] 价格同步失败：{len(prices.errors)} 种饰品，"
+                        "已停止生成计划"
+                    )
+                else:
+                    missing_price_names = sorted(
+                        {
+                            str(asset["market_hash_name"])
+                            for asset in eligible_assets
+                            if not self.store.prices(
+                                int(asset["appid"]),
+                                str(asset["market_hash_name"]),
+                                currency.value,
+                            )
+                        }
+                    )
+                    if missing_price_names:
+                        price_sync_failed = True
+                        result.errors.extend(
+                            "价格同步："
+                            f"{name} 未取得可用的最近30天价格数据，"
+                            "已停止生成计划"
+                            for name in missing_price_names
                         )
+                        report(
+                            f"[3/4] 价格数据缺失：{len(missing_price_names)} 种饰品，"
+                            "已停止生成计划"
+                        )
+                    else:
+                        profile = self.store.strategy_profile()
+                        plans = await self.create_plans(
+                            profile.stages[0].pricing_source,
+                            currency,
+                            strategy_profile_id=profile.id,
+                            assetids=assetids,
+                            asset_keys=asset_keys,
+                            maximum_items=len(assetids),
+                        )
+                        result.plans_created = len(plans)
+                        result.price_reviews = sum(
+                            plan.state is ListingState.PRICE_REVIEW for plan in plans
+                        )
+                        report(
+                            f"[3/4] 计划生成完成：正常/总计 "
+                            f"{result.plans_created - result.price_reviews}/"
+                            f"{result.plans_created}，异常价格 {result.price_reviews} 条"
+                        )
+                        for plan in plans:
+                            if plan.state is ListingState.PRICE_REVIEW:
+                                result.errors.append(
+                                    f"异常价格待确认：{plan.market_hash_name}，"
+                                    f"上架价 {plan.buyer_price_minor / 100:.2f}"
+                                )
             except (
                 OSError,
                 PlaywrightError,
@@ -945,12 +1055,17 @@ class ListingManager:
             for record in self.store.listings(
                 [ListingState.PLANNED, ListingState.FAILED]
             )
+            if not price_sync_failed
+            and self.asset_key(record) not in self._repricing_asset_keys
         ]
         report(f"[4/4] 开始执行 {len(pending_ids)} 条待提交计划")
         if pending_ids:
             try:
                 submitted = await self.execute(
-                    pending_ids, EXECUTE_CONFIRMATION
+                    pending_ids,
+                    EXECUTE_CONFIRMATION,
+                    progress=report,
+                    success_action="[4/4] 新上架完成",
                 )
                 result.listings_submitted = sum(
                     record.state is ListingState.PENDING_CONFIRMATION

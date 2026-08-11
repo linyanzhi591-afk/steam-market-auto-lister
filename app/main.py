@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     database.initialize()
-    database.clear_runtime_cache()
+    database.clear_runtime_cache(preserve_active_listings=True)
     session = await steam_session_service.restore()
     if session.wallet_currency:
         database.save_currency(session.wallet_currency)
@@ -35,18 +36,18 @@ async def lifespan(_app: FastAPI):
                     "Steam 启动库存同步部分失败：%s",
                     "；".join(inventory_result.errors),
                 )
-        except (OSError, PlaywrightError, RuntimeError) as exc:
+        except (OSError, PlaywrightError, RuntimeError, sqlite3.Error) as exc:
             logger.warning("Steam 启动库存同步失败：%s", exc)
         try:
-            await listing_manager.refresh_current_listings()
-        except (OSError, PlaywrightError, RuntimeError) as exc:
+            await listing_manager.sync_states()
+        except (OSError, PlaywrightError, RuntimeError, sqlite3.Error) as exc:
             logger.warning("Steam 启动当前在售同步失败：%s", exc)
     background_scheduler.start()
     yield
     await background_scheduler.stop()
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.2.0", lifespan=lifespan)
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

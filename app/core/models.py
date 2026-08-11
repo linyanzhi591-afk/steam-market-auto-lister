@@ -28,6 +28,12 @@ class ListingState(StrEnum):
     FAILED = "failed"
 
 
+class ListingSyncStatus(StrEnum):
+    MATCHED = "matched"
+    EXTERNAL = "external"
+    PENDING_MATCH = "pending_match"
+
+
 class PricingStrategy(StrEnum):
     ROBUST_MEDIAN = "robust_median"
     MARKET_FOLLOW = "market_follow"
@@ -51,7 +57,7 @@ class PriceDecision(BaseModel):
     price_minor: int = Field(ge=0)
     confidence: str
     reason: str
-    seller_receives_minor: int | None = Field(default=None, ge=0)
+    seller_receives_minor: int = Field(default=0, ge=0)
     buyer_pays_minor: int = Field(default=0, ge=0)
 
 
@@ -85,6 +91,7 @@ class ListingRecord(BaseModel):
     minimum_buyer_price_minor: int = 1
     steam_listing_id: str | None = None
     steam_listed_at: str | None = None
+    listing_requested_at: datetime | None = None
     error_message: str | None = None
     price_source: str = "strategy"
     strategy_seller_price_minor: int | None = None
@@ -93,6 +100,7 @@ class ListingRecord(BaseModel):
     price_difference_percent: float | None = None
     active_since: datetime | None = None
     next_action_at: datetime | None = None
+    sync_status: ListingSyncStatus = ListingSyncStatus.PENDING_MATCH
     created_at: datetime
     updated_at: datetime
 
@@ -115,6 +123,11 @@ class ListingExecuteRequest(BaseModel):
 
 class ListingCancelRequest(BaseModel):
     listing_ids: list[int] = Field(min_length=1)
+
+
+class ListingCustomPriceRequest(BaseModel):
+    listing_ids: list[int] = Field(min_length=1)
+    custom_buyer_price_minor: int = Field(ge=3)
 
 
 class ListingRepriceRequest(BaseModel):
@@ -168,6 +181,7 @@ class FullRunResult(BaseModel):
     plans_created: int = 0
     price_reviews: int = 0
     listings_submitted: int = 0
+    warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
@@ -208,8 +222,6 @@ class StrategyStage(BaseModel):
     forecast_hours: int = Field(default=6, ge=0, le=48)
     recent_floor_percent: float = Field(default=90, ge=0, le=200)
     long_floor_percent: float = Field(default=85, ge=0, le=200)
-    trend_robust_floor_percent: float = Field(default=90, ge=0, le=100)
-    fast_sell_floor_percent: float = Field(default=85, ge=0, le=100)
     maximum_drop_percent: float | None = Field(default=None, ge=0, le=100)
     minimum_price_points: int = Field(default=24, ge=1, le=1000)
     duration_hours: int = Field(default=24, ge=1, le=720)

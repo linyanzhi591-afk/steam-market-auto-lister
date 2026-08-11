@@ -71,6 +71,32 @@ function earliestTime(values) {
   return parseable[0]?.value || available[0];
 }
 
+function marketListingUrl(item) {
+  return `https://steamcommunity.com/market/listings/${encodeURIComponent(item.appid)}/${encodeURIComponent(item.market_hash_name)}`;
+}
+
+function groupedTasks(items, keyForItem) {
+  return Array.from(items.reduce((groups, item) => {
+    const key = keyForItem(item);
+    const current = groups.get(key);
+    if (current) {
+      current.listingIds.push(item.id);
+    } else {
+      groups.set(key, { ...item, listingIds: [item.id] });
+    }
+    return groups;
+  }, new Map()).values());
+}
+
+function selectedPlanIds() {
+  return [...new Set(
+    Array.from(document.querySelectorAll(".plan-select:checked"))
+      .flatMap((checkbox) => checkbox.dataset.listingIds.split(","))
+      .map(Number)
+      .filter(Number.isFinite)
+  )];
+}
+
 function toast(message) {
   $("#toast").textContent = message;
   $("#toast").hidden = false;
@@ -110,7 +136,7 @@ function renderInventory(items) {
     ? groupedInventory.map((item, index) => `<tr>
         <td><input class="inventory-select" type="checkbox" data-group-index="${index}" aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${item.appid}</td><td>${escapeHtml(item.market_hash_name)}</td>
-        <td>${item.amount}${item.assetCount > 1 ? `（${item.assetCount} 个独立资产）` : ""}</td>
+        <td>${item.amount}</td>
         <td>${item.tradable ? "是" : "否"}</td>
         <td><button class="secondary blacklist-add" type="button" data-group-index="${index}">加入黑名单</button></td>
       </tr>`).join("")
@@ -141,6 +167,7 @@ const listingPriceSourceLabels = {
   age_reprice_reference: "同款时间调价参考",
   age_reference_confirmed: "已确认同款参考价",
   strategy_confirmed: "已确认策略价",
+  custom: "用户自定义价",
   custom_confirmed: "用户自定义价",
   strategy_reference_expired: "参考失效，改用策略价",
 };
@@ -268,16 +295,55 @@ function renderListings(items, blacklist) {
   const newListings = items.filter((item) =>
     ["planned", "failed"].includes(item.state)
   );
+  const groupedNewListings = groupedTasks(newListings, (item) => [
+    item.appid,
+    item.market_hash_name,
+    item.state,
+    item.strategy_profile_id,
+    item.stage,
+    item.strategy,
+    item.price_source,
+    item.buyer_price_minor,
+    item.minimum_buyer_price_minor,
+    item.error_message || "",
+  ].join("\u0000"));
+  const groupedPriceReviews = groupedTasks(priceReviews, (item) => [
+    item.appid,
+    item.market_hash_name,
+    item.strategy_profile_id,
+    item.stage,
+    item.strategy_buyer_price_minor,
+    item.buyer_price_minor,
+    item.minimum_buyer_price_minor,
+    item.price_source,
+    item.error_message || "",
+    Number(item.price_difference_percent || 0).toFixed(6),
+  ].join("\u0000"));
   const pendingConfirmations = items.filter(
     (item) => item.state === "pending_confirmation"
   );
-  const activeListings = items.filter((item) => item.state === "active");
+  const activeListings = items.filter((item) =>
+    ["active", "pending_confirmation"].includes(item.state)
+    && ["matched", "external", "pending_match"].includes(item.sync_status)
+  );
   groupedActiveListings = Array.from(activeListings.reduce((groups, item) => {
-    const key = `${item.appid}\u0000${item.market_hash_name}`;
+    const key = [
+      item.appid,
+      item.contextid,
+      item.market_hash_name,
+      item.buyer_price_minor,
+    ].join("\u0000");
     const current = groups.get(key);
     if (current) {
-      current.listingIds.push(item.id);
-      current.strategies.add(item.strategy);
+      if (item.sync_status === "matched") current.listingIds.push(item.id);
+      if (item.sync_status !== "external") {
+        current.strategies.add(`${item.strategy}（阶段 ${item.stage}）`);
+        current.localQuantity += 1;
+      }
+      if (item.sync_status !== "pending_match") current.steamQuantity += 1;
+      if (item.sync_status === "matched") current.matchedQuantity += 1;
+      if (item.sync_status === "pending_match") current.pendingQuantity += 1;
+      if (item.sync_status === "external") current.externalQuantity += 1;
       current.buyerPrices.push(item.buyer_price_minor);
       current.steamListedTimes.push(item.steam_listed_at);
       current.nextActionTimes.push(item.next_action_at);
@@ -285,30 +351,47 @@ function renderListings(items, blacklist) {
     } else {
       groups.set(key, {
         appid: item.appid,
+        contextid: item.contextid,
         market_hash_name: item.market_hash_name,
-        listingIds: [item.id],
-        strategies: new Set([item.strategy]),
+        listingIds: item.sync_status === "matched" ? [item.id] : [],
+        strategies: new Set(
+          item.sync_status === "external"
+            ? []
+            : [`${item.strategy}（阶段 ${item.stage}）`]
+        ),
+        localQuantity: item.sync_status === "external" ? 0 : 1,
+        steamQuantity: item.sync_status === "pending_match" ? 0 : 1,
+        matchedQuantity: item.sync_status === "matched" ? 1 : 0,
+        pendingQuantity: item.sync_status === "pending_match" ? 1 : 0,
+        externalQuantity: item.sync_status === "external" ? 1 : 0,
         buyerPrices: [item.buyer_price_minor],
         steamListedTimes: [item.steam_listed_at],
         nextActionTimes: [item.next_action_at],
         errors: new Set(item.error_message ? [item.error_message] : []),
-        blacklisted: blacklistKeys.has(key),
+        blacklisted: blacklistKeys.has(
+          `${item.appid}\u0000${item.market_hash_name}`
+        ),
       });
     }
     return groups;
   }, new Map()).values());
-  $("#new-listings-body").innerHTML = newListings.length
-    ? newListings.map((item) => `<tr>
-        <td><input class="plan-select" type="checkbox" data-listing-id="${item.id}"
+  $("#new-listings-body").innerHTML = groupedNewListings.length
+    ? groupedNewListings.map((item) => `<tr>
+        <td><input class="plan-select" type="checkbox" data-listing-ids="${item.listingIds.join(",")}"
           aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
-        <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td><td>${item.strategy}</td>
+        <td>${item.state}</td><td>${escapeHtml(item.market_hash_name)}</td>
+        <td>${item.listingIds.length}</td>
+        <td>${item.strategy}</td>
         <td>${escapeHtml(listingPriceSourceLabels[item.price_source] || item.price_source)}</td>
         <td>${money(item.buyer_price_minor)}</td>
+        <td><div class="actions"><button class="plan-custom-price secondary" type="button"
+          data-listing-ids="${item.listingIds.join(",")}">自定义价格</button>
+          <a class="market-link" href="${marketListingUrl(item)}" target="_blank" rel="noopener noreferrer">Steam 市场</a></div></td>
         <td class="${item.error_message ? "error-text" : ""}">${escapeHtml(
           item.error_message || ""
         )}</td>
       </tr>`).join("")
-    : '<tr><td colspan="7">暂无新上架任务</td></tr>';
+    : '<tr><td colspan="9">暂无新上架任务</td></tr>';
   $("#select-all-plans").checked = false;
   $("#select-all-plans").indeterminate = false;
   $("#toggle-all-plans").textContent = "全选未提交任务";
@@ -322,28 +405,42 @@ function renderListings(items, blacklist) {
         <td>${escapeHtml(item.error_message || "等待 Steam 手机确认")}</td>
       </tr>`).join("")
     : '<tr><td colspan="6">暂无等待手机确认的任务</td></tr>';
-  $("#price-review-body").innerHTML = priceReviews.length
-    ? priceReviews.map((item) => `<tr>
+  $("#price-review-body").innerHTML = groupedPriceReviews.length
+    ? groupedPriceReviews.map((item) => `<tr>
         <td>${escapeHtml(item.market_hash_name)}</td>
+        <td>${item.listingIds.length}</td>
         <td>${money(item.strategy_buyer_price_minor || 0)}</td>
         <td>${money(item.buyer_price_minor)}</td>
         <td class="error-text">${Number(item.price_difference_percent || 0).toFixed(2)}%</td>
         <td><div class="actions">
-          <button class="review-choice" data-listing-id="${item.id}" data-choice="reference" type="button">使用参考价</button>
-          <button class="review-choice secondary" data-listing-id="${item.id}" data-choice="strategy" type="button">使用策略价</button>
-          <button class="review-choice secondary" data-listing-id="${item.id}" data-choice="custom" type="button">自定义</button>
-          <button class="review-choice danger" data-listing-id="${item.id}" data-choice="skip" type="button">暂不处理</button>
+          <button class="review-choice" data-listing-ids="${item.listingIds.join(",")}" data-choice="reference" type="button">使用参考价</button>
+          <button class="review-choice secondary" data-listing-ids="${item.listingIds.join(",")}" data-choice="strategy" type="button">使用策略价</button>
+          <button class="review-choice secondary" data-listing-ids="${item.listingIds.join(",")}" data-choice="custom" type="button">自定义</button>
+          <a class="market-link" href="${marketListingUrl(item)}" target="_blank" rel="noopener noreferrer">Steam 市场</a>
+          <button class="review-choice danger" data-listing-ids="${item.listingIds.join(",")}" data-choice="skip" type="button">暂不处理</button>
         </div></td>
       </tr>`).join("")
-    : '<tr><td colspan="5">没有价格异常任务</td></tr>';
+    : '<tr><td colspan="6">没有价格异常任务</td></tr>';
   $("#active-listings-body").innerHTML = groupedActiveListings.length
-    ? groupedActiveListings.map((item, index) => `<tr>
+    ? groupedActiveListings.map((item, index) => {
+      const quantityMismatch = item.localQuantity !== item.steamQuantity;
+      const syncLabel = quantityMismatch ? "数量不一致" : "已匹配";
+      const quantityDetail = [
+        `本地 ${item.localQuantity}`,
+        `Steam ${item.steamQuantity}`,
+        `已匹配 ${item.matchedQuantity}`,
+        `待匹配 ${item.pendingQuantity}`,
+        `外部 ${item.externalQuantity}`,
+      ].join(" / ");
+      return `<tr>
         <td><input class="active-select" type="checkbox" data-group-index="${index}"
-          ${item.blacklisted ? "disabled" : ""}
+          ${item.blacklisted || !item.listingIds.length ? "disabled" : ""}
           aria-label="选择 ${escapeHtml(item.market_hash_name)}" /></td>
         <td>${escapeHtml(item.market_hash_name)}</td>
-        <td>${item.listingIds.length}</td>
-        <td>${item.strategies.size === 1 ? [...item.strategies][0] : "多个策略"}</td>
+        <td class="${quantityMismatch ? "error-text" : ""}">${syncLabel}</td>
+        <td>${quantityDetail}</td>
+        <td>${item.strategies.size === 1 ? [...item.strategies][0]
+          : item.strategies.size ? "多个策略/阶段" : "外部挂单"}</td>
         <td>${moneyRange(item.buyerPrices)}</td>
         <td>${displaySteamTime(earliestTime(item.steamListedTimes))}</td>
         <td>${earliestTime(item.nextActionTimes)
@@ -353,8 +450,9 @@ function renderListings(items, blacklist) {
         <td><button class="secondary active-blacklist-toggle" type="button" data-group-index="${index}">
           ${item.blacklisted ? "移出黑名单" : "加入黑名单"}
         </button></td>
-      </tr>`).join("")
-    : '<tr><td colspan="9">当前没有已同步的在售挂单</td></tr>';
+      </tr>`;
+    }).join("")
+    : '<tr><td colspan="10">当前没有已同步的在售挂单</td></tr>';
   $("#select-all-active").checked = false;
   $("#select-all-active").indeterminate = false;
 }
@@ -543,13 +641,31 @@ $("#new-listings-body").addEventListener("change", () => {
   updatePlanSelectionState();
 });
 $("#cancel-plans").addEventListener("click", () => busy($("#cancel-plans"), async () => {
-  const ids = Array.from(document.querySelectorAll(".plan-select:checked"))
-    .map((checkbox) => Number(checkbox.dataset.listingId));
+  const ids = selectedPlanIds();
   if (!ids.length) throw new Error("请先选择需要取消的新上架任务");
   await post("/api/listings/cancel", { listing_ids: ids });
   toast(`已取消 ${ids.length} 条新上架任务`);
   await load();
 }));
+$("#new-listings-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".plan-custom-price");
+  if (!button) return;
+  await busy(button, async () => {
+    const value = window.prompt("输入该组任务的自定义买家支付价格");
+    if (!value) return;
+    const customBuyerPriceMinor = Math.round(Number(value) * 100);
+    if (!Number.isFinite(customBuyerPriceMinor) || customBuyerPriceMinor < 3) {
+      throw new Error("自定义价格无效");
+    }
+    const listingIds = button.dataset.listingIds.split(",").map(Number);
+    await post("/api/listings/custom-price", {
+      listing_ids: listingIds,
+      custom_buyer_price_minor: customBuyerPriceMinor,
+    });
+    toast(`已为 ${listingIds.length} 条新上架任务设置自定义价格`);
+    await load();
+  });
+});
 $("#price-review-body").addEventListener("click", async (event) => {
   const button = event.target.closest(".review-choice");
   if (!button) return;
@@ -564,10 +680,13 @@ $("#price-review-body").addEventListener("click", async (event) => {
         throw new Error("自定义价格无效");
       }
     }
-    await post(`/api/listings/${button.dataset.listingId}/resolve-price`, {
-      choice,
-      custom_buyer_price_minor: customBuyerPriceMinor,
-    });
+    const listingIds = button.dataset.listingIds.split(",").map(Number);
+    for (const listingId of listingIds) {
+      await post(`/api/listings/${listingId}/resolve-price`, {
+        choice,
+        custom_buyer_price_minor: customBuyerPriceMinor,
+      });
+    }
     toast(choice === "skip" ? "任务已暂不处理" : "价格已确认并转入新上架任务");
     await load();
   });
@@ -770,8 +889,7 @@ $("#execute-plans").addEventListener("click", () => busy($("#execute-plans"), as
   await load();
 }));
 $("#execute-selected-plans").addEventListener("click", () => busy($("#execute-selected-plans"), async () => {
-  const ids = Array.from(document.querySelectorAll(".plan-select:checked"))
-    .map((checkbox) => Number(checkbox.dataset.listingId));
+  const ids = selectedPlanIds();
   if (!ids.length) throw new Error("请先选择需要处理的新上架任务");
   const results = await post("/api/listings/execute", {
     listing_ids: ids,

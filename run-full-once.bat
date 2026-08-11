@@ -16,6 +16,14 @@ exit /b 1
 set "RUN_EXIT_CODE=%ERRORLEVEL%"
 
 echo.
+if "%RUN_EXIT_CODE%"=="2" (
+  echo Price exceptions need confirmation. Opening the local review page.
+  "%PYTHON_EXE%" -m app.launcher --price-review
+  echo The local review page has closed. Resolve the price exceptions, then run again.
+  echo Press any key to close this window.
+  pause
+  exit /b 2
+)
 if "%RUN_EXIT_CODE%"=="0" (
   echo Full run finished successfully. The program has exited.
 ) else (
