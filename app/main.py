@@ -47,7 +47,7 @@ async def lifespan(_app: FastAPI):
     await background_scheduler.stop()
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.2.0", lifespan=lifespan)
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

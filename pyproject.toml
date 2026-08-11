@@ -1,6 +1,6 @@
 [project]
 name = "steam-market-auto-lister"
-version = "1.0.0"
+version = "1.2.0"
 description = "本地运行的 Steam 市场饰品自动上架与重定价工具"
 readme = "README.md"
 requires-python = ">=3.11"
